@@ -3,9 +3,9 @@ use std::sync::LazyLock;
 use super::{Span, Spannable};
 use regex::Regex;
 
-/// A block token represents some lines of the input. 
+/// A block token represents some lines of the input.
 /// Except for EOF, all block tokens have the content they represent.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum BlockToken {
     /// A placeholder for an erroneous block.
     Error(String),
@@ -143,55 +143,50 @@ mod tests {
     use super::{BlockLexer, BlockToken};
     use indoc::indoc;
 
-    #[test]
-    fn sanity() {
-        let input = indoc! {"
-            :now 2026-04-08 08:00:00Z
-
-            -	Hello, FromDo! due 2026-04-08 08:00:00Z
-        "};
-        let tokens: Vec<_> = BlockLexer::new(input).map(|token| token.node).collect();
-
-        assert_eq!(
-            tokens,
-            vec![
-                BlockToken::Directive(":now 2026-04-08 08:00:00Z".to_string()),
-                BlockToken::Separation("\n\n".to_string()),
-                BlockToken::ToDoHeader("-\tHello, FromDo! due 2026-04-08 08:00:00Z".to_string()),
-                BlockToken::Separation("\n".to_string()),
-                BlockToken::EOF,
-            ]
-        );
-    }
-
-    #[test]
-    fn sanity_span() {
-        let input = indoc! {"
-            :now 2026-04-08 08:00:00Z
-
-            -	Hello, FromDo! due 2026-04-08 08:00:00Z
-        "};
-        let spans: Vec<_> = BlockLexer::new(input)
+    fn assert(input: &str, expected_nodes: Vec<BlockToken>, expected_spans: Vec<(usize, usize)>) {
+        let tokens: Vec<_> = BlockLexer::new(input).collect();
+        let nodes: Vec<_> = tokens.iter().map(|token| token.node.clone()).collect();
+        let spans: Vec<_> = tokens
+            .iter()
             .map(|token| (token.span.lo, token.span.hi))
             .collect();
 
-        assert_eq!(spans, vec![(0, 25), (25, 27), (27, 68), (68, 69), (69, 69)]);
+        assert_eq!(nodes, expected_nodes);
+        assert_eq!(spans, expected_spans);
+    }
+
+    #[test]
+    fn sanity() {
+        let input = indoc! {"
+            :now 2026-04-08T08:00:00Z
+
+            -	Hello, FromDo! due 2026-04-08T08:00:00Z
+        "};
+        assert(
+            input,
+            vec![
+                BlockToken::Directive(":now 2026-04-08T08:00:00Z".to_string()),
+                BlockToken::Separation("\n\n".to_string()),
+                BlockToken::ToDoHeader("-\tHello, FromDo! due 2026-04-08T08:00:00Z".to_string()),
+                BlockToken::Separation("\n".to_string()),
+                BlockToken::EOF,
+            ],
+            vec![(0, 25), (25, 27), (27, 68), (68, 69), (69, 69)],
+        );
     }
 
     #[test]
     fn todo() {
         let input = indoc! {"
-            -	Hello, FromDo! due 2026-04-08 08:00:00Z
+            -	Hello, FromDo! due 2026-04-08T08:00:00Z
             	Veni,
             	vidi,
             	vici.
         "};
-        let tokens: Vec<_> = BlockLexer::new(input).map(|token| token.node).collect();
-
-        assert_eq!(
-            tokens,
+        assert(
+            input,
             vec![
-                BlockToken::ToDoHeader("-\tHello, FromDo! due 2026-04-08 08:00:00Z".to_string()),
+                BlockToken::ToDoHeader("-\tHello, FromDo! due 2026-04-08T08:00:00Z".to_string()),
                 BlockToken::Separation("\n".to_string()),
                 BlockToken::ToDoContinuation("\tVeni,".to_string()),
                 BlockToken::Separation("\n".to_string()),
@@ -200,24 +195,7 @@ mod tests {
                 BlockToken::ToDoContinuation("\tvici.".to_string()),
                 BlockToken::Separation("\n".to_string()),
                 BlockToken::EOF,
-            ]
-        );
-    }
-
-    #[test]
-    fn todo_span() {
-        let input = indoc! {"
-            -	Hello, FromDo! due 2026-04-08 08:00:00Z
-            	Veni,
-            	vidi,
-            	vici.
-        "};
-        let spans: Vec<_> = BlockLexer::new(input)
-            .map(|token| (token.span.lo, token.span.hi))
-            .collect();
-
-        assert_eq!(
-            spans,
+            ],
             vec![
                 (0, 41),
                 (41, 42),
@@ -227,8 +205,8 @@ mod tests {
                 (55, 56),
                 (56, 62),
                 (62, 63),
-                (63, 63)
-            ]
+                (63, 63),
+            ],
         );
     }
 
@@ -237,45 +215,20 @@ mod tests {
         let input = indoc! {"
             what's the buzz?
         "};
-        let tokens: Vec<_> = BlockLexer::new(input).map(|token| token.node).collect();
-
-        assert_eq!(
-            tokens,
+        assert(
+            input,
             vec![
                 BlockToken::Error("what's the buzz?".to_string()),
                 BlockToken::Separation("\n".to_string()),
-                BlockToken::EOF
-            ]
+                BlockToken::EOF,
+            ],
+            vec![(0, 16), (16, 17), (17, 17)],
         );
-    }
-
-    #[test]
-    fn error_span() {
-        let input = indoc! {"
-            what's the buzz?
-        "};
-        let spans: Vec<_> = BlockLexer::new(input)
-            .map(|token| (token.span.lo, token.span.hi))
-            .collect();
-
-        assert_eq!(spans, vec![(0, 16), (16, 17), (17, 17)]);
     }
 
     #[test]
     fn eof() {
         let input = "";
-        let tokens: Vec<_> = BlockLexer::new(input).map(|token| token.node).collect();
-
-        assert_eq!(tokens, vec![BlockToken::EOF]);
-    }
-
-    #[test]
-    fn eof_span() {
-        let input = "";
-        let spans: Vec<_> = BlockLexer::new(input)
-            .map(|token| (token.span.lo, token.span.hi))
-            .collect();
-
-        assert_eq!(spans, vec![(0, 0)]);
+        assert(input, vec![BlockToken::EOF], vec![(0, 0)]);
     }
 }
