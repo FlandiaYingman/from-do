@@ -1,0 +1,3 @@
+[workspace]
+resolver = "3"
+members = ["from-do", "from-do-cli", "from-do-compiler", "from-do-lsp"]
