@@ -1,27 +1,58 @@
-use std::sync::LazyLock;
+use super::*;
 
-use super::{Span, Spannable};
 use regex::Regex;
 
-/// A block token represents some lines of the input.
-/// Except for EOF, all block tokens have the content they represent.
+/// A BlockToken is a block-level token in the input.
+///
+/// A BlockToken stores the string and the span of the token in the input. The
+/// span is mainly for error reporting.
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub enum BlockToken {
-    /// A placeholder for an erroneous block.
-    Error(String),
     /// EOF.
-    EOF,
-    /// Multiple newline characters.
-    Separation(String),
+    EOF(SString),
+    /// A placeholder for an erroneous block during lexing.
+    Error(SString),
+    /// A newline character, or more.
+    Separation(SString),
     /// A line beginning with ':'.
-    Directive(String),
-    /// A line beginning with '-' followed by '\t'.
-    ToDoHeader(String),
+    Directive(SString),
+    /// A line beginning with '-\t'.
+    ToDoHeader(SString),
     /// A line beginning with '\t'.
-    ToDoContinuation(String),
+    ToDoContinuation(SString),
 }
 
-pub type SBlockToken = Spannable<BlockToken>;
+impl BlockToken {
+    pub fn str(&self) -> &SString {
+        match self {
+            Self::EOF(s)
+            | Self::Error(s)
+            | Self::Separation(s)
+            | Self::Directive(s)
+            | Self::ToDoHeader(s)
+            | Self::ToDoContinuation(s) => s,
+        }
+    }
+
+    pub fn span(&self) -> Span {
+        self.str().span
+    }
+
+    pub fn len(&self) -> usize {
+        self.str().node.len()
+    }
+}
+
+mod re {
+    use regex::Regex;
+    use std::sync::LazyLock as LL;
+
+    pub const ERROR: LL<Regex> = LL::new(|| Regex::new(r"^[^\n]+").unwrap());
+    pub const SEPARATION: LL<Regex> = LL::new(|| Regex::new(r"^\n+").unwrap());
+    pub const DIRECTIVE: LL<Regex> = LL::new(|| Regex::new(r"^:[^\n]*").unwrap());
+    pub const TODO_HEADER: LL<Regex> = LL::new(|| Regex::new(r"^-\t[^\n]*").unwrap());
+    pub const TODO_CONTINUATION: LL<Regex> = LL::new(|| Regex::new(r"^\t[^\n]*").unwrap());
+}
 
 pub struct BlockLexer<'a> {
     source: &'a str,
@@ -38,20 +69,20 @@ impl<'a> BlockLexer<'a> {
         }
     }
 
-    fn token(node: BlockToken, lo: usize, hi: usize) -> SBlockToken {
-        Spannable {
-            node,
-            span: Span { lo, hi },
-        }
-    }
-
-    fn eof_token(&mut self) -> SBlockToken {
+    fn eof(&mut self) -> BlockToken {
         self.eof = true;
         let index = self.source.len();
-        Self::token(BlockToken::EOF, index, index)
+        BlockToken::EOF(SString::new(String::new(), index, index))
     }
 
-    fn peek_str(&self, n: usize) -> &str {
+    fn error(&mut self) -> BlockToken {
+        if let Some(s) = self.next_match(&re::ERROR) {
+            return BlockToken::Error(s);
+        }
+        panic!("No skippable error token found at index {}", self.current);
+    }
+
+    fn peek(&self, n: usize) -> &str {
         let lo = self.current;
         let iter = self.source[lo..].chars().take(n);
         let size = iter.map(|c| c.len_utf8()).sum::<usize>();
@@ -60,14 +91,7 @@ impl<'a> BlockLexer<'a> {
         &self.source[lo..hi]
     }
 
-    const SEPARATOR_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\n+").unwrap());
-    const DIRECTIVE_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^:[^\n]*").unwrap());
-    const TODO_HEADER_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-\t[^\n]*").unwrap());
-    const TODO_CONTINUATION_REGEX: LazyLock<Regex> =
-        LazyLock::new(|| Regex::new(r"^\t[^\n]*").unwrap());
-    const ERROR_REGEX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[^\n]+").unwrap());
-
-    fn next_match(&mut self, regex: &Regex) -> Option<(String, usize, usize)> {
+    fn next_match(&mut self, regex: &Regex) -> Option<SString> {
         let mat = regex.find(&self.source[self.current..])?;
 
         let lo = self.current + mat.start();
@@ -75,23 +99,12 @@ impl<'a> BlockLexer<'a> {
         let value = self.source[lo..hi].to_string();
         self.current = hi;
 
-        Some((value, lo, hi))
-    }
-
-    fn error(&mut self) -> SBlockToken {
-        if let Some((value, lo, hi)) = self.next_match(&Self::ERROR_REGEX) {
-            return Self::token(BlockToken::Error(value), lo, hi);
-        }
-
-        let lo = self.current;
-        let hi = lo + 1;
-        self.current = hi;
-        Self::token(BlockToken::Error(self.source[lo..hi].to_string()), lo, hi)
+        Some(SString::new(value, lo, hi))
     }
 }
 
 impl<'a> Iterator for BlockLexer<'a> {
-    type Item = SBlockToken;
+    type Item = BlockToken;
 
     fn next(&mut self) -> Option<Self::Item> {
         if self.eof {
@@ -99,34 +112,34 @@ impl<'a> Iterator for BlockLexer<'a> {
         }
 
         if self.current >= self.source.len() {
-            return Some(self.eof_token());
+            return Some(self.eof());
         }
 
-        let t = match self.peek_str(1) {
+        let token = match self.peek(1) {
             "\n" => {
-                if let Some((value, lo, hi)) = self.next_match(&Self::SEPARATOR_REGEX) {
-                    Self::token(BlockToken::Separation(value), lo, hi)
+                if let Some(s) = self.next_match(&re::SEPARATION) {
+                    BlockToken::Separation(s)
                 } else {
                     self.error()
                 }
             }
             ":" => {
-                if let Some((value, lo, hi)) = self.next_match(&Self::DIRECTIVE_REGEX) {
-                    Self::token(BlockToken::Directive(value), lo, hi)
+                if let Some(s) = self.next_match(&re::DIRECTIVE) {
+                    BlockToken::Directive(s)
                 } else {
                     self.error()
                 }
             }
             "-" => {
-                if let Some((value, lo, hi)) = self.next_match(&Self::TODO_HEADER_REGEX) {
-                    Self::token(BlockToken::ToDoHeader(value), lo, hi)
+                if let Some(s) = self.next_match(&re::TODO_HEADER) {
+                    BlockToken::ToDoHeader(s)
                 } else {
                     self.error()
                 }
             }
             "\t" => {
-                if let Some((value, lo, hi)) = self.next_match(&Self::TODO_CONTINUATION_REGEX) {
-                    Self::token(BlockToken::ToDoContinuation(value), lo, hi)
+                if let Some(s) = self.next_match(&re::TODO_CONTINUATION) {
+                    BlockToken::ToDoContinuation(s)
                 } else {
                     self.error()
                 }
@@ -134,25 +147,18 @@ impl<'a> Iterator for BlockLexer<'a> {
             _ => self.error(),
         };
 
-        Some(t)
+        Some(token)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BlockLexer, BlockToken};
+    use super::*;
     use indoc::indoc;
+    use pretty_assertions::assert_eq;
 
-    fn assert(input: &str, expected_nodes: Vec<BlockToken>, expected_spans: Vec<(usize, usize)>) {
-        let tokens: Vec<_> = BlockLexer::new(input).collect();
-        let nodes: Vec<_> = tokens.iter().map(|token| token.node.clone()).collect();
-        let spans: Vec<_> = tokens
-            .iter()
-            .map(|token| (token.span.lo, token.span.hi))
-            .collect();
-
-        assert_eq!(nodes, expected_nodes);
-        assert_eq!(spans, expected_spans);
+    fn assert_vec_block_token(input: &str, expected: Vec<BlockToken>) {
+        assert_eq!(BlockLexer::new(input).collect::<Vec<_>>(), expected);
     }
 
     #[test]
@@ -162,16 +168,19 @@ mod tests {
 
             -	Hello, FromDo! due 2026-04-08T08:00:00Z
         "};
-        assert(
+        assert_vec_block_token(
             input,
             vec![
-                BlockToken::Directive(":now 2026-04-08T08:00:00Z".to_string()),
-                BlockToken::Separation("\n\n".to_string()),
-                BlockToken::ToDoHeader("-\tHello, FromDo! due 2026-04-08T08:00:00Z".to_string()),
-                BlockToken::Separation("\n".to_string()),
-                BlockToken::EOF,
+                BlockToken::Directive(SString::new(":now 2026-04-08T08:00:00Z", 0, 25)),
+                BlockToken::Separation(SString::new("\n\n", 25, 27)),
+                BlockToken::ToDoHeader(SString::new(
+                    "-\tHello, FromDo! due 2026-04-08T08:00:00Z",
+                    27,
+                    68,
+                )),
+                BlockToken::Separation(SString::new("\n", 68, 69)),
+                BlockToken::EOF(SString::new(String::new(), 69, 69)),
             ],
-            vec![(0, 25), (25, 27), (27, 68), (68, 69), (69, 69)],
         );
     }
 
@@ -183,29 +192,22 @@ mod tests {
             	vidi,
             	vici.
         "};
-        assert(
+        assert_vec_block_token(
             input,
             vec![
-                BlockToken::ToDoHeader("-\tHello, FromDo! due 2026-04-08T08:00:00Z".to_string()),
-                BlockToken::Separation("\n".to_string()),
-                BlockToken::ToDoContinuation("\tVeni,".to_string()),
-                BlockToken::Separation("\n".to_string()),
-                BlockToken::ToDoContinuation("\tvidi,".to_string()),
-                BlockToken::Separation("\n".to_string()),
-                BlockToken::ToDoContinuation("\tvici.".to_string()),
-                BlockToken::Separation("\n".to_string()),
-                BlockToken::EOF,
-            ],
-            vec![
-                (0, 41),
-                (41, 42),
-                (42, 48),
-                (48, 49),
-                (49, 55),
-                (55, 56),
-                (56, 62),
-                (62, 63),
-                (63, 63),
+                BlockToken::ToDoHeader(SString::new(
+                    "-\tHello, FromDo! due 2026-04-08T08:00:00Z",
+                    0,
+                    41,
+                )),
+                BlockToken::Separation(SString::new("\n", 41, 42)),
+                BlockToken::ToDoContinuation(SString::new("\tVeni,", 42, 48)),
+                BlockToken::Separation(SString::new("\n", 48, 49)),
+                BlockToken::ToDoContinuation(SString::new("\tvidi,", 49, 55)),
+                BlockToken::Separation(SString::new("\n", 55, 56)),
+                BlockToken::ToDoContinuation(SString::new("\tvici.", 56, 62)),
+                BlockToken::Separation(SString::new("\n", 62, 63)),
+                BlockToken::EOF(SString::new(String::new(), 63, 63)),
             ],
         );
     }
@@ -215,20 +217,22 @@ mod tests {
         let input = indoc! {"
             what's the buzz?
         "};
-        assert(
+        assert_vec_block_token(
             input,
             vec![
-                BlockToken::Error("what's the buzz?".to_string()),
-                BlockToken::Separation("\n".to_string()),
-                BlockToken::EOF,
+                BlockToken::Error(SString::new("what's the buzz?", 0, 16)),
+                BlockToken::Separation(SString::new("\n", 16, 17)),
+                BlockToken::EOF(SString::new(String::new(), 17, 17)),
             ],
-            vec![(0, 16), (16, 17), (17, 17)],
         );
     }
 
     #[test]
     fn eof() {
         let input = "";
-        assert(input, vec![BlockToken::EOF], vec![(0, 0)]);
+        assert_vec_block_token(
+            input,
+            vec![BlockToken::EOF(SString::new(String::new(), 0, 0))],
+        );
     }
 }

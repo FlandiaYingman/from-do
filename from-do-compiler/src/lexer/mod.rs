@@ -1,18 +1,13 @@
 pub mod block_lexer;
 pub mod lexer;
 
-#[rustfmt::skip]
-mod imports {
-    pub use super::block_lexer::BlockLexer;
-    pub use super::block_lexer::BlockToken;
-    pub use super::block_lexer::SBlockToken;
-    pub use super::lexer::Lexer;
-    pub use super::lexer::Token;
-    pub use super::lexer::SToken;
-}
-pub use imports::*;
+pub use block_lexer::BlockLexer;
+pub use block_lexer::BlockToken;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+pub use lexer::Lexer;
+pub use lexer::Token;
+
+#[derive(Copy, Debug, Clone, PartialEq, Eq)]
 pub struct Span {
     pub lo: usize,
     pub hi: usize,
@@ -36,7 +31,29 @@ impl std::ops::Add for Span {
     }
 }
 
+impl std::ops::AddAssign for Span {
+    fn add_assign(&mut self, rhs: Self) {
+        *self = *self + rhs;
+    }
+}
+
 pub type SString = Spannable<String>;
+
+impl SString {
+    pub fn new(node: impl Into<String>, lo: usize, hi: usize) -> Self {
+        debug_assert!(lo <= hi);
+        Self {
+            node: node.into(),
+            span: Span { lo, hi },
+        }
+    }
+}
+
+impl From<SString> for String {
+    fn from(v: SString) -> String {
+        v.node
+    }
+}
 
 impl std::ops::Add for SString {
     type Output = Self;
@@ -49,8 +66,22 @@ impl std::ops::Add for SString {
     }
 }
 
-impl Into<String> for SString {
-    fn into(self) -> String {
-        self.node
+impl std::ops::Add<usize> for SString {
+    type Output = Self;
+
+    fn add(self, rhs: usize) -> Self::Output {
+        Self {
+            node: self.node,
+            span: Span {
+                lo: self.span.lo + rhs,
+                hi: self.span.hi + rhs,
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for SString {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "'{}' ({}:{})", self.node, self.span.lo, self.span.hi)
     }
 }
