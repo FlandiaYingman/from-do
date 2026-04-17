@@ -198,6 +198,7 @@ where
                 head,
                 body: None,
                 due,
+                due_in: None, // TODO
             })
         } else {
             let body = contents.into_iter().reduce(|c1, c2| c1 + c2).unwrap();
@@ -205,6 +206,7 @@ where
                 head,
                 body: Some(body),
                 due,
+                due_in: None, // TODO
             })
         }
     }
@@ -326,6 +328,7 @@ mod tests {
                         },
                         body: None,
                         due: Some(ts("2026-04-08T08:00:00Z")),
+                        due_in: None, // TODO
                     }),
                 ],
             },
@@ -387,6 +390,7 @@ mod tests {
                             span: Span { lo: 99, hi: 115 },
                         }),
                         due: Some(ts("2026-04-08T08:00:00Z")),
+                        due_in: None, // TODO
                     }),
                     Block::ToDo(ToDo {
                         head: SString {
@@ -398,6 +402,7 @@ mod tests {
                             span: Span { lo: 160, hi: 176 },
                         }),
                         due: Some(ts("2026-04-01T08:00:00Z")),
+                        due_in: None, // TODO
                     }),
                 ],
             },
@@ -589,6 +594,7 @@ mod tests {
                     },
                     body: None,
                     due: None,
+                    due_in: None,
                 })],
             },
         );
@@ -670,6 +676,7 @@ mod tests {
                         span: Span { lo: 8, hi: 12 },
                     }),
                     due: None,
+                    due_in: None,
                 })],
             },
         );
@@ -707,6 +714,7 @@ mod tests {
                         span: Span { lo: 8, hi: 32 },
                     }),
                     due: None,
+                    due_in: None,
                 })],
             },
         );

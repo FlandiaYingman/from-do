@@ -31,6 +31,12 @@ pub struct Program {
     pub blocks: Vec<Block>,
 }
 
+impl Program {
+    pub fn new() -> Self {
+        Self { blocks: Vec::new() }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Directive {
     Now(directive::Now),
@@ -49,4 +55,5 @@ pub struct ToDo {
     pub body: Option<SString>,
 
     pub due: Option<jiff::Timestamp>,
+    pub due_in: Option<jiff::SignedDuration>,
 }
