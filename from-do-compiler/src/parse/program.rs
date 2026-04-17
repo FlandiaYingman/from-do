@@ -20,6 +20,10 @@ pub enum Error {
         expected: &'static str,
     },
     UnknownDirective(SString),
+    TimestampParseError {
+        timestamp: SString,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,11 +37,9 @@ pub enum Directive {
 }
 
 pub mod directive {
-    use super::*;
-
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Now {
-        pub now: SString,
+        pub now: jiff::Timestamp,
     }
 }
 
@@ -45,4 +47,6 @@ pub mod directive {
 pub struct ToDo {
     pub head: SString,
     pub body: Option<SString>,
+
+    pub due: Option<jiff::Timestamp>,
 }

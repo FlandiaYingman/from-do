@@ -15,6 +15,28 @@ where
 
 type Result<T> = std::result::Result<T, Error>;
 
+mod re {
+    use super::*;
+
+    use regex::Regex;
+    use std::sync::LazyLock as LL;
+
+    const TODO_HEAD_DUE: LL<Regex> = LL::new(|| Regex::new(r"due (\S+)$").unwrap());
+
+    pub fn todo_head_due(head: &SString) -> Option<SString> {
+        TODO_HEAD_DUE
+            .captures(&head.node)
+            .and_then(|caps| caps.get(1))
+            .map(|m| SString {
+                node: m.as_str().to_string(),
+                span: Span {
+                    lo: head.span.lo + m.start(),
+                    hi: head.span.lo + m.end(),
+                },
+            })
+    }
+}
+
 impl<Iter> Parser<Iter>
 where
     Iter: Iterator<Item = Token>,
@@ -127,7 +149,8 @@ where
         match name.node.as_str() {
             "now" => {
                 let _ = self.space()?;
-                let now = self.directive_arg()?;
+                let now_str = self.directive_arg()?;
+                let now = Self::timestamp(&now_str)?;
                 Ok(Directive::Now(directive::Now { now }))
             }
             _ => Err(Error::UnknownDirective(name)),
@@ -150,6 +173,10 @@ where
         let head = self.todo_content()?;
         let _ = self.line()?;
 
+        let due = re::todo_head_due(&head)
+            .map(|due_str| Self::timestamp(&due_str))
+            .transpose()?;
+
         let mut contents = Vec::new();
         'a: while let Some(Token::ToDoIndent(_)) = self.source.peek() {
             let _ = self.todo_indent().unwrap();
@@ -167,12 +194,17 @@ where
             contents.push(content);
         }
         if contents.is_empty() {
-            Ok(ToDo { head, body: None })
+            Ok(ToDo {
+                head,
+                body: None,
+                due,
+            })
         } else {
             let body = contents.into_iter().reduce(|c1, c2| c1 + c2).unwrap();
             Ok(ToDo {
                 head,
                 body: Some(body),
+                due,
             })
         }
     }
@@ -200,6 +232,21 @@ where
     }
 }
 
+impl<Iter> Parser<Iter>
+where
+    Iter: Iterator<Item = Token>,
+{
+    fn timestamp(timestamp_str: &SString) -> Result<jiff::Timestamp> {
+        timestamp_str
+            .node
+            .parse::<jiff::Timestamp>()
+            .map_err(|err| TimestampParseError {
+                timestamp: timestamp_str.clone(),
+                message: err.to_string(),
+            })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::Parser as _Parser;
@@ -210,6 +257,10 @@ mod tests {
         ($bt_name:path, $value:expr) => {
             $bt_name(SString::new($value, 0, 0))
         };
+    }
+
+    fn ts(value: &str) -> jiff::Timestamp {
+        value.parse().unwrap()
     }
 
     fn with_span(token: Token, lo: usize, hi: usize) -> Token {
@@ -266,10 +317,7 @@ mod tests {
             Program {
                 blocks: vec![
                     Block::Directive(Directive::Now(directive::Now {
-                        now: SString {
-                            node: "2026-04-08T08:00:00Z".to_string(),
-                            span: Span { lo: 5, hi: 25 },
-                        },
+                        now: ts("2026-04-08T08:00:00Z"),
                     })),
                     Block::ToDo(ToDo {
                         head: SString {
@@ -277,6 +325,7 @@ mod tests {
                             span: Span { lo: 29, hi: 68 },
                         },
                         body: None,
+                        due: Some(ts("2026-04-08T08:00:00Z")),
                     }),
                 ],
             },
@@ -323,16 +372,10 @@ mod tests {
             Program {
                 blocks: vec![
                     Block::Directive(Directive::Now(directive::Now {
-                        now: SString {
-                            node: "2026-04-08T08:00:00Z".to_string(),
-                            span: Span { lo: 7, hi: 27 },
-                        },
+                        now: ts("2026-04-08T08:00:00Z"),
                     })),
                     Block::Directive(Directive::Now(directive::Now {
-                        now: SString {
-                            node: "2026-04-01T08:00:00Z".to_string(),
-                            span: Span { lo: 34, hi: 54 },
-                        },
+                        now: ts("2026-04-01T08:00:00Z"),
                     })),
                     Block::ToDo(ToDo {
                         head: SString {
@@ -343,6 +386,7 @@ mod tests {
                             node: "What's the buzz?".to_string(),
                             span: Span { lo: 99, hi: 115 },
                         }),
+                        due: Some(ts("2026-04-08T08:00:00Z")),
                     }),
                     Block::ToDo(ToDo {
                         head: SString {
@@ -353,6 +397,7 @@ mod tests {
                             node: "What's the buzz?".to_string(),
                             span: Span { lo: 160, hi: 176 },
                         }),
+                        due: Some(ts("2026-04-01T08:00:00Z")),
                     }),
                 ],
             },
@@ -433,10 +478,7 @@ mod tests {
             ],
             Program {
                 blocks: vec![Block::Directive(Directive::Now(directive::Now {
-                    now: SString {
-                        node: "2026-04-08T08:00:00Z".to_string(),
-                        span: Span { lo: 5, hi: 25 },
-                    },
+                    now: ts("2026-04-08T08:00:00Z"),
                 }))],
             },
         );
@@ -546,6 +588,7 @@ mod tests {
                         span: Span { lo: 2, hi: 8 },
                     },
                     body: None,
+                    due: None,
                 })],
             },
         );
@@ -626,6 +669,7 @@ mod tests {
                         node: "Body".to_string(),
                         span: Span { lo: 8, hi: 12 },
                     }),
+                    due: None,
                 })],
             },
         );
@@ -662,6 +706,7 @@ mod tests {
                         node: "Veni, Vidi, \nVici. ".to_string(),
                         span: Span { lo: 8, hi: 32 },
                     }),
+                    due: None,
                 })],
             },
         );
