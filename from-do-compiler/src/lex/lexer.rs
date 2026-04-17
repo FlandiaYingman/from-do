@@ -103,14 +103,14 @@ mod re {
     use regex::Regex;
     use std::sync::LazyLock as LL;
 
-    pub const SPACE: LL<Regex> = LL::new(|| Regex::new(r"^[^\S\n]+").unwrap());
+    pub static SPACE: LL<Regex> = LL::new(|| Regex::new(r"^[^\S\n]+").unwrap());
 
-    pub const DIRECTIVE_HEAD: LL<Regex> = LL::new(|| Regex::new(r"^:").unwrap());
-    pub const DIRECTIVE_ARG: LL<Regex> = LL::new(|| Regex::new(r"^\S+").unwrap());
+    pub static DIRECTIVE_HEAD: LL<Regex> = LL::new(|| Regex::new(r"^:").unwrap());
+    pub static DIRECTIVE_ARG: LL<Regex> = LL::new(|| Regex::new(r"^\S+").unwrap());
 
-    pub const TODO_HEAD: LL<Regex> = LL::new(|| Regex::new(r"^-").unwrap());
-    pub const TODO_INDENT: LL<Regex> = LL::new(|| Regex::new(r"^\t").unwrap());
-    pub const TODO_CONTENT: LL<Regex> = LL::new(|| Regex::new(r"^[^\n]+").unwrap());
+    pub static TODO_HEAD: LL<Regex> = LL::new(|| Regex::new(r"^-").unwrap());
+    pub static TODO_INDENT: LL<Regex> = LL::new(|| Regex::new(r"^\t").unwrap());
+    pub static TODO_CONTENT: LL<Regex> = LL::new(|| Regex::new(r"^[^\n]+").unwrap());
 }
 
 impl<Iter> Lexer<Iter>

@@ -21,7 +21,7 @@ mod re {
     use regex::Regex;
     use std::sync::LazyLock as LL;
 
-    const TODO_HEAD_DUE: LL<Regex> = LL::new(|| Regex::new(r"due (\S+)$").unwrap());
+    static TODO_HEAD_DUE: LL<Regex> = LL::new(|| Regex::new(r"due (\S+)$").unwrap());
 
     pub fn todo_head_due(head: &SString) -> Option<SString> {
         TODO_HEAD_DUE

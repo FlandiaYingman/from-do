@@ -47,11 +47,11 @@ mod re {
     use regex::Regex;
     use std::sync::LazyLock as LL;
 
-    pub const ERROR: LL<Regex> = LL::new(|| Regex::new(r"^[^\n]+").unwrap());
-    pub const SEPARATION: LL<Regex> = LL::new(|| Regex::new(r"^\n+").unwrap());
-    pub const DIRECTIVE: LL<Regex> = LL::new(|| Regex::new(r"^:[^\n]*").unwrap());
-    pub const TODO_HEADER: LL<Regex> = LL::new(|| Regex::new(r"^-\t[^\n]*").unwrap());
-    pub const TODO_CONTINUATION: LL<Regex> = LL::new(|| Regex::new(r"^\t[^\n]*").unwrap());
+    pub static ERROR: LL<Regex> = LL::new(|| Regex::new(r"^[^\n]+").unwrap());
+    pub static SEPARATION: LL<Regex> = LL::new(|| Regex::new(r"^\n+").unwrap());
+    pub static DIRECTIVE: LL<Regex> = LL::new(|| Regex::new(r"^:[^\n]*").unwrap());
+    pub static TODO_HEADER: LL<Regex> = LL::new(|| Regex::new(r"^-\t[^\n]*").unwrap());
+    pub static TODO_CONTINUATION: LL<Regex> = LL::new(|| Regex::new(r"^\t[^\n]*").unwrap());
 }
 
 pub struct BlockLexer<'a> {
