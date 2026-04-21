@@ -163,6 +163,9 @@ mod tests {
 
     #[test]
     fn sanity() {
+        //| :now 2026-04-08T08:00:00Z
+        //|
+        //| -	Hello, FromDo! due 2026-04-08T08:00:00Z
         let input = indoc! {"
             :now 2026-04-08T08:00:00Z
 
@@ -185,12 +188,30 @@ mod tests {
     }
 
     #[test]
-    fn todo() {
+    fn directive_tz() {
+        //| :tz America/New_York
+        let input = indoc! {"
+            :tz America/New_York
+        "};
+        assert_vec_block_token(
+            input,
+            vec![
+                BlockToken::Directive(SString::new(":tz America/New_York", 0, 20)),
+                BlockToken::Separation(SString::new("\n", 20, 21)),
+                BlockToken::EOF(SString::new(String::new(), 21, 21)),
+            ],
+        );
+    }
+
+    #[test]
+    fn todo_2() {
+        //| -	Hello, FromDo! due 2026-04-08T08:00:00Z
+        //| 	What's the buzz?
+        //| 	Tell me what's-a-happening
         let input = indoc! {"
             -	Hello, FromDo! due 2026-04-08T08:00:00Z
-            	Veni,
-            	vidi,
-            	vici.
+            	What's the buzz?
+            	Tell me what's-a-happening
         "};
         assert_vec_block_token(
             input,
@@ -201,26 +222,65 @@ mod tests {
                     41,
                 )),
                 BlockToken::Separation(SString::new("\n", 41, 42)),
-                BlockToken::ToDoContinuation(SString::new("\tVeni,", 42, 48)),
-                BlockToken::Separation(SString::new("\n", 48, 49)),
-                BlockToken::ToDoContinuation(SString::new("\tvidi,", 49, 55)),
-                BlockToken::Separation(SString::new("\n", 55, 56)),
-                BlockToken::ToDoContinuation(SString::new("\tvici.", 56, 62)),
-                BlockToken::Separation(SString::new("\n", 62, 63)),
-                BlockToken::EOF(SString::new(String::new(), 63, 63)),
+                BlockToken::ToDoContinuation(SString::new("\tWhat's the buzz?", 42, 59)),
+                BlockToken::Separation(SString::new("\n", 59, 60)),
+                BlockToken::ToDoContinuation(SString::new("\tTell me what's-a-happening", 60, 87)),
+                BlockToken::Separation(SString::new("\n", 87, 88)),
+                BlockToken::EOF(SString::new(String::new(), 88, 88)),
+            ],
+        );
+    }
+
+    #[test]
+    fn todo_header_null() {
+        //| -
+        assert_vec_block_token(
+            "-\t",
+            vec![
+                BlockToken::ToDoHeader(SString::new("-\t", 0, 2)),
+                BlockToken::EOF(SString::new(String::new(), 2, 2)),
+            ],
+        );
+    }
+
+    #[test]
+    fn todo_continuation_null() {
+        //|
+        assert_vec_block_token(
+            "\t",
+            vec![
+                BlockToken::ToDoContinuation(SString::new("\t", 0, 1)),
+                BlockToken::EOF(SString::new(String::new(), 1, 1)),
+            ],
+        );
+    }
+
+    #[test]
+    fn todo_header_error() {
+        //| - Hello, FromDo!
+        let input = indoc! {"
+            - Hello, FromDo!
+        "};
+        assert_vec_block_token(
+            input,
+            vec![
+                BlockToken::Error(SString::new("- Hello, FromDo!", 0, 16)),
+                BlockToken::Separation(SString::new("\n", 16, 17)),
+                BlockToken::EOF(SString::new(String::new(), 17, 17)),
             ],
         );
     }
 
     #[test]
     fn error() {
+        //| What's the buzz?
         let input = indoc! {"
-            what's the buzz?
+            What's the buzz?
         "};
         assert_vec_block_token(
             input,
             vec![
-                BlockToken::Error(SString::new("what's the buzz?", 0, 16)),
+                BlockToken::Error(SString::new("What's the buzz?", 0, 16)),
                 BlockToken::Separation(SString::new("\n", 16, 17)),
                 BlockToken::EOF(SString::new(String::new(), 17, 17)),
             ],
@@ -229,6 +289,7 @@ mod tests {
 
     #[test]
     fn eof() {
+        // empty input
         let input = "";
         assert_vec_block_token(
             input,

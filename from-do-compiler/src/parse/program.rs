@@ -24,6 +24,10 @@ pub enum Error {
         timestamp: SString,
         message: String,
     },
+    TimeZoneParseError {
+        time_zone: SString,
+        message: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,12 +44,18 @@ impl Program {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Directive {
     Now(directive::Now),
+    Tz(directive::Tz),
 }
 
 pub mod directive {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Now {
-        pub now: jiff::Timestamp,
+        pub now: jiff::Zoned,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Tz {
+        pub tz: jiff::tz::TimeZone,
     }
 }
 
@@ -54,6 +64,7 @@ pub struct ToDo {
     pub head: SString,
     pub body: Option<SString>,
 
-    pub due: Option<jiff::Timestamp>,
-    pub due_in: Option<jiff::SignedDuration>,
+    pub due: Option<jiff::Zoned>,
+
+    pub out: Option<SString>,
 }

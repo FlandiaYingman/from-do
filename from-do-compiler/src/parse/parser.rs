@@ -2,6 +2,7 @@ use super::*;
 use crate::lex::*;
 
 use Error::*;
+use jiff::tz::TimeZone;
 
 use std::iter::Peekable;
 
@@ -21,18 +22,29 @@ mod re {
     use regex::Regex;
     use std::sync::LazyLock as LL;
 
-    static TODO_HEAD_DUE: LL<Regex> = LL::new(|| Regex::new(r"due (\S+)$").unwrap());
+    static TODO_HEAD_DUE: LL<Regex> = LL::new(|| Regex::new(r"^(.*) due (\S+)$").unwrap());
 
-    pub fn todo_head_due(head: &SString) -> Option<SString> {
+    pub fn todo_head_due(head: &SString) -> Option<(SString, SString)> {
         TODO_HEAD_DUE
             .captures(&head.node)
-            .and_then(|caps| caps.get(1))
-            .map(|m| SString {
-                node: m.as_str().to_string(),
-                span: Span {
-                    lo: head.span.lo + m.start(),
-                    hi: head.span.lo + m.end(),
-                },
+            .map(|caps| (caps.get(1).unwrap(), caps.get(2).unwrap()))
+            .map(|(m1, m2)| {
+                (
+                    SString {
+                        node: m1.as_str().to_string(),
+                        span: Span {
+                            lo: head.span.lo + m1.start(),
+                            hi: head.span.lo + m1.end(),
+                        },
+                    },
+                    SString {
+                        node: m2.as_str().to_string(),
+                        span: Span {
+                            lo: head.span.lo + m2.start(),
+                            hi: head.span.lo + m2.end(),
+                        },
+                    },
+                )
             })
     }
 }
@@ -153,6 +165,12 @@ where
                 let now = Self::timestamp(&now_str)?;
                 Ok(Directive::Now(directive::Now { now }))
             }
+            "tz" => {
+                let _ = self.space()?;
+                let tz_str = self.directive_arg()?;
+                let tz = Self::time_zone(&tz_str)?;
+                Ok(Directive::Tz(directive::Tz { tz }))
+            }
             _ => Err(Error::UnknownDirective(name)),
         }
     }
@@ -173,42 +191,58 @@ where
         let head = self.todo_content()?;
         let _ = self.line()?;
 
-        let due = re::todo_head_due(&head)
-            .map(|due_str| Self::timestamp(&due_str))
-            .transpose()?;
+        let (head, due) = match re::todo_head_due(&head) {
+            Some((head, due)) => (head, Some(Self::timestamp(&due)?)),
+            None => (head, None),
+        };
 
-        let mut contents = Vec::new();
+        let mut out_vec = Vec::new();
+        while let Some(Token::ToDoIndent(_)) = self.source.peek() {
+            let _ = self.todo_indent().unwrap();
+            if let Some(Token::Line(_)) = self.source.peek() {
+                let _ = self.line().unwrap();
+                break;
+            }
+            let content = self.todo_content()?;
+            out_vec.push(content);
+            let line = self.line()?;
+            out_vec.push(line);
+        }
+        let out = if out_vec.is_empty() {
+            None
+        } else {
+            Some(out_vec.into_iter().reduce(|c1, c2| c1 + c2).unwrap())
+        };
+
+        let mut body_vec = Vec::new();
         'a: while let Some(Token::ToDoIndent(_)) = self.source.peek() {
             let _ = self.todo_indent().unwrap();
             'b: loop {
                 if let Some(Token::Line(_)) = self.source.peek() {
                     let line = self.line().unwrap();
-                    contents.push(line);
+                    body_vec.push(line);
                     continue 'a;
                 } else {
                     break 'b;
                 }
             }
             let content = self.todo_content()?;
-            let _ = self.line()?;
-            contents.push(content);
+            body_vec.push(content);
+            let line = self.line()?;
+            body_vec.push(line);
         }
-        if contents.is_empty() {
-            Ok(ToDo {
-                head,
-                body: None,
-                due,
-                due_in: None, // TODO
-            })
+        let body = if body_vec.is_empty() {
+            None
         } else {
-            let body = contents.into_iter().reduce(|c1, c2| c1 + c2).unwrap();
-            Ok(ToDo {
-                head,
-                body: Some(body),
-                due,
-                due_in: None, // TODO
-            })
-        }
+            Some(body_vec.into_iter().reduce(|c1, c2| c1 + c2).unwrap())
+        };
+
+        Ok(ToDo {
+            head,
+            body,
+            due,
+            out,
+        })
     }
 
     const TODO_INDENT_EXPECTED: &'static str = "todo indent";
@@ -238,14 +272,21 @@ impl<Iter> Parser<Iter>
 where
     Iter: Iterator<Item = Token>,
 {
-    fn timestamp(timestamp_str: &SString) -> Result<jiff::Timestamp> {
+    fn timestamp(timestamp_str: &SString) -> Result<jiff::Zoned> {
         timestamp_str
             .node
-            .parse::<jiff::Timestamp>()
+            .parse::<jiff::Zoned>()
             .map_err(|err| TimestampParseError {
                 timestamp: timestamp_str.clone(),
                 message: err.to_string(),
             })
+    }
+
+    fn time_zone(tz_str: &SString) -> Result<jiff::tz::TimeZone> {
+        TimeZone::get(&tz_str.node).map_err(|err| TimeZoneParseError {
+            time_zone: tz_str.clone(),
+            message: err.to_string(),
+        })
     }
 }
 
@@ -253,6 +294,7 @@ where
 mod tests {
     use super::Parser as _Parser;
     use super::*;
+    use indoc::indoc;
     use pretty_assertions::assert_eq;
 
     macro_rules! t {
@@ -261,8 +303,12 @@ mod tests {
         };
     }
 
-    fn ts(value: &str) -> jiff::Timestamp {
+    fn ts(value: &str) -> jiff::Zoned {
         value.parse().unwrap()
+    }
+
+    fn tz(name: &str) -> TimeZone {
+        TimeZone::get(name).unwrap()
     }
 
     fn with_span(token: Token, lo: usize, hi: usize) -> Token {
@@ -299,19 +345,29 @@ mod tests {
     type Parser = _Parser<std::vec::IntoIter<Token>>;
 
     #[test]
+    fn sanity_0() {
+        // empty input
+        assert_program(vec![t!(Token::EOF, "")], Program { blocks: vec![] });
+    }
+
+    #[test]
     fn sanity_1() {
+        //| :now 2026-04-08T08:00:00+00:00[UTC]
+        //|
+        //| -	Hello, FromDo! due 2026-04-08T08:00:00+00:00[UTC]
         assert_program(
             vec![
                 t!(Token::DirectiveHead, ":"),
                 t!(Token::DirectiveArg, "now"),
                 t!(Token::Space, " "),
-                t!(Token::DirectiveArg, "2026-04-08T08:00:00Z"),
-                t!(Token::Line, "\n\n"),
+                t!(Token::DirectiveArg, "2026-04-08T08:00:00+00:00[UTC]"),
+                t!(Token::Line, "\n"),
+                t!(Token::Line, "\n"),
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
                 t!(
                     Token::ToDoContent,
-                    "Hello, FromDo! due 2026-04-08T08:00:00Z"
+                    "Hello, FromDo! due 2026-04-08T08:00:00+00:00[UTC]"
                 ),
                 t!(Token::Line, "\n"),
                 t!(Token::EOF, ""),
@@ -319,16 +375,16 @@ mod tests {
             Program {
                 blocks: vec![
                     Block::Directive(Directive::Now(directive::Now {
-                        now: ts("2026-04-08T08:00:00Z"),
+                        now: ts("2026-04-08T08:00:00+00:00[UTC]"),
                     })),
                     Block::ToDo(ToDo {
                         head: SString {
-                            node: "Hello, FromDo! due 2026-04-08T08:00:00Z".to_string(),
-                            span: Span { lo: 29, hi: 68 },
+                            node: "Hello, FromDo!".to_string(),
+                            span: Span { lo: 39, hi: 53 },
                         },
                         body: None,
-                        due: Some(ts("2026-04-08T08:00:00Z")),
-                        due_in: None, // TODO
+                        due: Some(ts("2026-04-08T08:00:00+00:00[UTC]")),
+                        out: None,
                     }),
                 ],
             },
@@ -337,72 +393,89 @@ mod tests {
 
     #[test]
     fn sanity_2() {
+        //|
+        //|
+        //| :now 2026-04-08T08:00:00+00:00[UTC]
+        //|
+        //| :now 2026-04-01T08:00:00+00:00[UTC]
+        //|
+        //| -	Hello, FromDo! due 2026-04-08T08:00:00+00:00[UTC]
+        //| 	What's the buzz?
+        //|
+        //| -	Hello, FromDo! due 2026-04-01T08:00:00+00:00[UTC]
+        //| 	What's the buzz?
+        //|
         assert_program(
             vec![
-                t!(Token::Line, "\n\n"),
+                t!(Token::Line, "\n"),
+                t!(Token::Line, "\n"),
                 t!(Token::DirectiveHead, ":"),
                 t!(Token::DirectiveArg, "now"),
                 t!(Token::Space, " "),
-                t!(Token::DirectiveArg, "2026-04-08T08:00:00Z"),
-                t!(Token::Line, "\n\n"),
+                t!(Token::DirectiveArg, "2026-04-08T08:00:00+00:00[UTC]"),
+                t!(Token::Line, "\n"),
+                t!(Token::Line, "\n"),
                 t!(Token::DirectiveHead, ":"),
                 t!(Token::DirectiveArg, "now"),
                 t!(Token::Space, " "),
-                t!(Token::DirectiveArg, "2026-04-01T08:00:00Z"),
-                t!(Token::Line, "\n\n"),
+                t!(Token::DirectiveArg, "2026-04-01T08:00:00+00:00[UTC]"),
+                t!(Token::Line, "\n"),
+                t!(Token::Line, "\n"),
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
                 t!(
                     Token::ToDoContent,
-                    "Hello, FromDo! due 2026-04-08T08:00:00Z"
+                    "Hello, FromDo! due 2026-04-08T08:00:00+00:00[UTC]"
                 ),
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoIndent, "\t"),
                 t!(Token::ToDoContent, "What's the buzz?"),
-                t!(Token::Line, "\n\n"),
+                t!(Token::Line, "\n"),
+                t!(Token::Line, "\n"),
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
                 t!(
                     Token::ToDoContent,
-                    "Hello, FromDo! due 2026-04-01T08:00:00Z"
+                    "Hello, FromDo! due 2026-04-01T08:00:00+00:00[UTC]"
                 ),
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoIndent, "\t"),
                 t!(Token::ToDoContent, "What's the buzz?"),
-                t!(Token::Line, "\n\n"),
+                t!(Token::Line, "\n"),
+                t!(Token::Line, "\n"),
                 t!(Token::EOF, ""),
             ],
             Program {
                 blocks: vec![
                     Block::Directive(Directive::Now(directive::Now {
-                        now: ts("2026-04-08T08:00:00Z"),
+                        now: ts("2026-04-08T08:00:00+00:00[UTC]"),
                     })),
                     Block::Directive(Directive::Now(directive::Now {
-                        now: ts("2026-04-01T08:00:00Z"),
+                        now: ts("2026-04-01T08:00:00+00:00[UTC]"),
                     })),
                     Block::ToDo(ToDo {
                         head: SString {
-                            node: "Hello, FromDo! due 2026-04-08T08:00:00Z".to_string(),
-                            span: Span { lo: 58, hi: 97 },
+                            node: "Hello, FromDo!".to_string(),
+                            span: Span { lo: 78, hi: 92 },
                         },
-                        body: Some(SString {
-                            node: "What's the buzz?".to_string(),
-                            span: Span { lo: 99, hi: 115 },
+                        body: None,
+                        due: Some(ts("2026-04-08T08:00:00+00:00[UTC]")),
+                        out: Some(SString {
+                            node: "What's the buzz?\n".to_string(),
+                            span: Span { lo: 129, hi: 146 },
                         }),
-                        due: Some(ts("2026-04-08T08:00:00Z")),
-                        due_in: None, // TODO
                     }),
                     Block::ToDo(ToDo {
                         head: SString {
-                            node: "Hello, FromDo! due 2026-04-01T08:00:00Z".to_string(),
-                            span: Span { lo: 119, hi: 158 },
+                            node: "Hello, FromDo!".to_string(),
+                            span: Span { lo: 149, hi: 163 },
                         },
-                        body: Some(SString {
-                            node: "What's the buzz?".to_string(),
-                            span: Span { lo: 160, hi: 176 },
+                        body: None,
+                        due: Some(ts("2026-04-01T08:00:00+00:00[UTC]")),
+                        out: Some(SString {
+                            node: "What's the buzz?\n".to_string(),
+                            span: Span { lo: 200, hi: 217 },
                         }),
-                        due: Some(ts("2026-04-01T08:00:00Z")),
-                        due_in: None, // TODO
                     }),
                 ],
             },
@@ -411,16 +484,22 @@ mod tests {
 
     #[test]
     fn block_error_lexer() {
+        // LexerError("What's the buzz?")
         assert_program(
-            vec![t!(Token::Error, "buzz"), t!(Token::EOF, "")],
+            vec![t!(Token::Error, "What's the buzz?"), t!(Token::EOF, "")],
             Program {
-                blocks: vec![Block::Error(Error::LexerError(SString::new("buzz", 0, 4)))],
+                blocks: vec![Block::Error(Error::LexerError(SString::new(
+                    "What's the buzz?",
+                    0,
+                    16,
+                )))],
             },
         );
     }
 
     #[test]
     fn block_error_space() {
+        // UnexpectedToken(Space)
         assert_program(
             vec![t!(Token::Space, " "), t!(Token::EOF, "")],
             Program {
@@ -434,11 +513,12 @@ mod tests {
 
     #[test]
     fn block_error_directive_arg() {
+        // UnexpectedToken(DirectiveArg("FromDo"))
         assert_program(
-            vec![t!(Token::DirectiveArg, "dang"), t!(Token::EOF, "")],
+            vec![t!(Token::DirectiveArg, "FromDo"), t!(Token::EOF, "")],
             Program {
                 blocks: vec![Block::Error(Error::UnexpectedToken {
-                    unexpected: Token::DirectiveArg(SString::new("dang", 0, 4)),
+                    unexpected: Token::DirectiveArg(SString::new("FromDo", 0, 6)),
                     expected: Parser::BLOCK_EXPECTED,
                 })],
             },
@@ -447,6 +527,7 @@ mod tests {
 
     #[test]
     fn block_error_todo_indent() {
+        // UnexpectedToken(ToDoIndent)
         assert_program(
             vec![t!(Token::ToDoIndent, "\t"), t!(Token::EOF, "")],
             Program {
@@ -460,11 +541,12 @@ mod tests {
 
     #[test]
     fn block_error_todo_content() {
+        // UnexpectedToken(ToDoContent("FromDo"))
         assert_program(
-            vec![t!(Token::ToDoContent, "Head"), t!(Token::EOF, "")],
+            vec![t!(Token::ToDoContent, "FromDo"), t!(Token::EOF, "")],
             Program {
                 blocks: vec![Block::Error(Error::UnexpectedToken {
-                    unexpected: Token::ToDoContent(SString::new("Head", 0, 4)),
+                    unexpected: Token::ToDoContent(SString::new("FromDo", 0, 6)),
                     expected: Parser::BLOCK_EXPECTED,
                 })],
             },
@@ -473,24 +555,68 @@ mod tests {
 
     #[test]
     fn directive_now() {
+        //| :now 2026-04-08T08:00:00+00:00[UTC]
         assert_program(
             vec![
                 t!(Token::DirectiveHead, ":"),
                 t!(Token::DirectiveArg, "now"),
                 t!(Token::Space, " "),
-                t!(Token::DirectiveArg, "2026-04-08T08:00:00Z"),
+                t!(Token::DirectiveArg, "2026-04-08T08:00:00+00:00[UTC]"),
                 t!(Token::EOF, ""),
             ],
             Program {
                 blocks: vec![Block::Directive(Directive::Now(directive::Now {
-                    now: ts("2026-04-08T08:00:00Z"),
+                    now: ts("2026-04-08T08:00:00+00:00[UTC]"),
                 }))],
             },
         );
     }
 
     #[test]
+    fn directive_tz() {
+        //| :tz America/New_York
+        assert_program(
+            vec![
+                t!(Token::DirectiveHead, ":"),
+                t!(Token::DirectiveArg, "tz"),
+                t!(Token::Space, " "),
+                t!(Token::DirectiveArg, "America/New_York"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::Directive(Directive::Tz(directive::Tz {
+                    tz: tz("America/New_York"),
+                }))],
+            },
+        );
+    }
+
+    #[test]
+    fn directive_tz_error_invalid() {
+        //| :tz FromDo/Nowhere
+        assert_program(
+            vec![
+                t!(Token::DirectiveHead, ":"),
+                t!(Token::DirectiveArg, "tz"),
+                t!(Token::Space, " "),
+                t!(Token::DirectiveArg, "FromDo/Nowhere"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::Error(Error::TimeZoneParseError {
+                    time_zone: SString {
+                        node: "FromDo/Nowhere".to_string(),
+                        span: Span { lo: 4, hi: 18 },
+                    },
+                    message: TimeZone::get("FromDo/Nowhere").unwrap_err().to_string(),
+                })],
+            },
+        );
+    }
+
+    #[test]
     fn directive_error_unknown() {
+        //| :unknown
         assert_program(
             vec![
                 t!(Token::DirectiveHead, ":"),
@@ -507,7 +633,22 @@ mod tests {
     }
 
     #[test]
+    fn directive_error_no_name_eof() {
+        //| :
+        assert_program(
+            vec![t!(Token::DirectiveHead, ":"), t!(Token::EOF, "")],
+            Program {
+                blocks: vec![Block::Error(Error::UnexpectedToken {
+                    unexpected: Token::EOF(SString::new("", 1, 1)),
+                    expected: Parser::DIRECTIVE_ARG_EXPECTED,
+                })],
+            },
+        );
+    }
+
+    #[test]
     fn directive_error_no_name() {
+        //| :
         assert_program(
             vec![
                 t!(Token::DirectiveHead, ":"),
@@ -525,6 +666,7 @@ mod tests {
 
     #[test]
     fn directive_error_no_space_1() {
+        //| :now
         assert_program(
             vec![
                 t!(Token::DirectiveHead, ":"),
@@ -542,6 +684,7 @@ mod tests {
 
     #[test]
     fn directive_error_no_space_2() {
+        //| :now2026-04-08T08:00:00Z
         assert_program(
             vec![
                 t!(Token::DirectiveHead, ":"),
@@ -560,6 +703,7 @@ mod tests {
 
     #[test]
     fn directive_error_no_value() {
+        //| :now
         assert_program(
             vec![
                 t!(Token::DirectiveHead, ":"),
@@ -578,6 +722,7 @@ mod tests {
 
     #[test]
     fn todo_simple() {
+        //| -	FromDo
         assert_program(
             vec![
                 t!(Token::ToDoHead, "-"),
@@ -594,7 +739,7 @@ mod tests {
                     },
                     body: None,
                     due: None,
-                    due_in: None,
+                    out: None,
                 })],
             },
         );
@@ -602,15 +747,16 @@ mod tests {
 
     #[test]
     fn todo_error_no_head_indent() {
+        //| -FromDo
         assert_program(
             vec![
                 t!(Token::ToDoHead, "-"),
-                t!(Token::ToDoContent, "Head"),
+                t!(Token::ToDoContent, "FromDo"),
                 t!(Token::EOF, ""),
             ],
             Program {
                 blocks: vec![Block::Error(Error::UnexpectedToken {
-                    unexpected: Token::ToDoContent(SString::new("Head", 1, 5)),
+                    unexpected: Token::ToDoContent(SString::new("FromDo", 1, 7)),
                     expected: Parser::TODO_INDENT_EXPECTED,
                 })],
             },
@@ -619,6 +765,7 @@ mod tests {
 
     #[test]
     fn todo_error_no_head_content() {
+        //| -
         assert_program(
             vec![
                 t!(Token::ToDoHead, "-"),
@@ -636,16 +783,17 @@ mod tests {
 
     #[test]
     fn todo_error_no_head_line() {
+        //| -	FromDo
         assert_program(
             vec![
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "Head"),
+                t!(Token::ToDoContent, "FromDo"),
                 t!(Token::EOF, ""),
             ],
             Program {
                 blocks: vec![Block::Error(Error::UnexpectedToken {
-                    unexpected: Token::EOF(SString::new("", 6, 6)),
+                    unexpected: Token::EOF(SString::new("", 8, 8)),
                     expected: Parser::LINE_EXPECTED,
                 })],
             },
@@ -654,29 +802,34 @@ mod tests {
 
     #[test]
     fn todo_body_1() {
+        //| -	FromDo
+        //|
+        //| 	What's the buzz?
         assert_program(
             vec![
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "Head"),
+                t!(Token::ToDoContent, "FromDo"),
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "Body"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "What's the buzz?"),
                 t!(Token::Line, "\n"),
                 t!(Token::EOF, ""),
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
                     head: SString {
-                        node: "Head".to_string(),
-                        span: Span { lo: 2, hi: 6 },
+                        node: "FromDo".to_string(),
+                        span: Span { lo: 2, hi: 8 },
                     },
                     body: Some(SString {
-                        node: "Body".to_string(),
-                        span: Span { lo: 8, hi: 12 },
+                        node: "What's the buzz?\n".to_string(),
+                        span: Span { lo: 12, hi: 29 },
                     }),
                     due: None,
-                    due_in: None,
+                    out: None,
                 })],
             },
         );
@@ -684,37 +837,92 @@ mod tests {
 
     #[test]
     fn todo_body_3() {
+        //| -	FromDo
+        //|
+        //| 	What's the buzz?
+        //| 	Tell me what's happening!
+        //| 	Think about today instead
         assert_program(
             vec![
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "Head"),
-                t!(Token::Line, "\n"),
-                t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "Veni, "),
-                t!(Token::Line, "\n"),
-                t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "Vidi, "),
+                t!(Token::ToDoContent, "FromDo"),
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoIndent, "\t"),
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "Vici. "),
+                t!(Token::ToDoContent, "What's the buzz?"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "Tell me what's happening!"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "Think about today instead"),
                 t!(Token::Line, "\n"),
                 t!(Token::EOF, ""),
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
                     head: SString {
-                        node: "Head".to_string(),
-                        span: Span { lo: 2, hi: 6 },
+                        node: "FromDo".to_string(),
+                        span: Span { lo: 2, hi: 8 },
                     },
                     body: Some(SString {
-                        node: "Veni, Vidi, \nVici. ".to_string(),
-                        span: Span { lo: 8, hi: 32 },
+                        node: indoc! {"
+                            What's the buzz?
+                            Tell me what's happening!
+                            Think about today instead
+                        "}
+                        .to_string(),
+                        span: Span { lo: 12, hi: 83 },
                     }),
                     due: None,
-                    due_in: None,
+                    out: None,
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_error_no_out_content() {
+        //| -	FromDo
+        //|
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "FromDo"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::Error(Error::UnexpectedToken {
+                    unexpected: Token::EOF(SString::new("", 10, 10)),
+                    expected: Parser::TODO_CONTENT_EXPECTED,
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_error_no_out_line() {
+        //| -	FromDo
+        //| 	What's the buzz?
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "FromDo"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "What's the buzz?"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::Error(Error::UnexpectedToken {
+                    unexpected: Token::EOF(SString::new("", 26, 26)),
+                    expected: Parser::LINE_EXPECTED,
                 })],
             },
         );
@@ -722,18 +930,23 @@ mod tests {
 
     #[test]
     fn todo_error_no_body_content() {
+        //| -	FromDo
+        //|
+        //|
         assert_program(
             vec![
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "Head"),
+                t!(Token::ToDoContent, "FromDo"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoIndent, "\t"),
                 t!(Token::EOF, ""),
             ],
             Program {
                 blocks: vec![Block::Error(Error::UnexpectedToken {
-                    unexpected: Token::EOF(SString::new("", 8, 8)),
+                    unexpected: Token::EOF(SString::new("", 12, 12)),
                     expected: Parser::TODO_CONTENT_EXPECTED,
                 })],
             },
@@ -742,22 +955,357 @@ mod tests {
 
     #[test]
     fn todo_error_no_body_line() {
+        //| -	FromDo
+        //|
+        //| 	What's the buzz?
         assert_program(
             vec![
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "Head"),
+                t!(Token::ToDoContent, "FromDo"),
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "Body"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "What's the buzz?"),
                 t!(Token::EOF, ""),
             ],
             Program {
                 blocks: vec![Block::Error(Error::UnexpectedToken {
-                    unexpected: Token::EOF(SString::new("", 12, 12)),
+                    unexpected: Token::EOF(SString::new("", 28, 28)),
                     expected: Parser::LINE_EXPECTED,
                 })],
             },
         );
+    }
+
+    #[test]
+    fn todo_due() {
+        //| -	What's the Buzz due 0001-01-01T00:00:00+00:00[UTC]
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(
+                    Token::ToDoContent,
+                    "What's the Buzz due 0001-01-01T00:00:00+00:00[UTC]"
+                ),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    head: SString {
+                        node: "What's the Buzz".to_string(),
+                        span: Span { lo: 2, hi: 17 },
+                    },
+                    body: None,
+                    due: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
+                    out: None,
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_due_error() {
+        //| -	What's the Buzz due 0000-00-00T00:00:00Z
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(
+                    Token::ToDoContent,
+                    "What's the Buzz due 0000-00-00T00:00:00Z"
+                ),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::Error(Error::TimestampParseError {
+                    timestamp: SString {
+                        node: "0000-00-00T00:00:00Z".to_string(),
+                        span: Span { lo: 22, hi: 42 },
+                    },
+                    message: "failed to parse month in date: failed to parse two digit integer as month: parameter 'month' is not in the required range of 1..=12".to_string(),
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_out_1() {
+        //| -	FromDo
+        //| 	What's the buzz?
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "FromDo"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "What's the buzz?"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    head: SString {
+                        node: "FromDo".to_string(),
+                        span: Span { lo: 2, hi: 8 },
+                    },
+                    body: None,
+                    due: None,
+                    out: Some(SString {
+                        node: "What's the buzz?\n".to_string(),
+                        span: Span { lo: 10, hi: 27 },
+                    }),
+                })],
+            },
+        )
+    }
+
+    #[test]
+    fn todo_out_4() {
+        //| -	FromDo
+        //| 	What's the buzz?
+        //| 	Tell me what's happening!
+        //| 	What's the buzz?
+        //| 	Tell me what's happening!
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "FromDo"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "What's the buzz?"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "Tell me what's happening!"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "What's the buzz?"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "Tell me what's happening!"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    head: SString {
+                        node: "FromDo".to_string(),
+                        span: Span { lo: 2, hi: 8 },
+                    },
+                    body: None,
+                    due: None,
+                    out: Some(SString {
+                        node: indoc! {"
+                            What's the buzz?
+                            Tell me what's happening!
+                            What's the buzz?
+                            Tell me what's happening!
+                        "}
+                        .to_string(),
+                        span: Span { lo: 10, hi: 99 },
+                    }),
+                })],
+            },
+        )
+    }
+
+    #[test]
+    fn todo_1() {
+        //| -	What's the Buzz due 0001-01-01T00:00:00+00:00[UTC]
+        //| 	What's the buzz? Tell me what's happening
+        //|
+        //| 	What's the buzz? Tell me what's happening
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(
+                    Token::ToDoContent,
+                    "What's the Buzz due 0001-01-01T00:00:00+00:00[UTC]"
+                ),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(
+                    Token::ToDoContent,
+                    "What's the buzz? Tell me what's happening"
+                ),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(
+                    Token::ToDoContent,
+                    "What's the buzz? Tell me what's happening"
+                ),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    head: SString {
+                        node: "What's the Buzz".to_string(),
+                        span: Span { lo: 2, hi: 17 },
+                    },
+                    body: Some(SString {
+                        node: indoc! {"
+                            What's the buzz? Tell me what's happening
+                        "}
+                        .to_string(),
+                        span: Span { lo: 99, hi: 141 },
+                    }),
+                    due: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
+                    out: Some(SString {
+                        node: indoc! {"
+                            What's the buzz? Tell me what's happening
+                        "}
+                        .to_string(),
+                        span: Span { lo: 54, hi: 96 },
+                    }),
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_2() {
+        //| -	What's the Buzz due 0001-01-01T00:00:00+00:00[UTC]
+        //| 	What's the buzz? Tell me what's happening
+        //| 	What's the buzz? Tell me what's happening
+        //| 	What's the buzz? Tell me what's happening
+        //|
+        //| 	Why should you want to know?
+        //| 	Don't you mind about the future
+        //| 	Don't you try to think ahead
+        //| 	Save tomorrow for tomorrow
+        //| 	Think about today instead
+        //|
+        //| 	When do we ride into Jerusalem?
+        //| 	When do we ride into Jerusalem?
+        //| 	When do we ride into Jerusalem?
+        //|
+        //| 	Let me try to cool down your face a bit
+        //| 	Let me try to cool down your face a bit
+        //| 	Let me try to cool down your face a bit
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(
+                    Token::ToDoContent,
+                    "What's the Buzz due 0001-01-01T00:00:00+00:00[UTC]"
+                ),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(
+                    Token::ToDoContent,
+                    "What's the buzz? Tell me what's happening"
+                ),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(
+                    Token::ToDoContent,
+                    "What's the buzz? Tell me what's happening"
+                ),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(
+                    Token::ToDoContent,
+                    "What's the buzz? Tell me what's happening"
+                ),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "Why should you want to know?"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "Don't you mind about the future"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "Don't you try to think ahead"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "Save tomorrow for tomorrow"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "Think about today instead"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "When do we ride into Jerusalem?"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "When do we ride into Jerusalem?"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "When do we ride into Jerusalem?"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(
+                    Token::ToDoContent,
+                    "Let me try to cool down your face a bit"
+                ),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(
+                    Token::ToDoContent,
+                    "Let me try to cool down your face a bit"
+                ),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(
+                    Token::ToDoContent,
+                    "Let me try to cool down your face a bit"
+                ),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    head: SString {
+                        node: "What's the Buzz".to_string(),
+                        span: Span { lo: 2, hi: 17 },
+                    },
+                    body: Some(SString {
+                        node: indoc! {"
+                            Why should you want to know?
+                            Don't you mind about the future
+                            Don't you try to think ahead
+                            Save tomorrow for tomorrow
+                            Think about today instead
+                            
+                            When do we ride into Jerusalem?
+                            When do we ride into Jerusalem?
+                            When do we ride into Jerusalem?
+                            
+                            Let me try to cool down your face a bit
+                            Let me try to cool down your face a bit
+                            Let me try to cool down your face a bit
+                        "}
+                        .to_string(),
+                        span: Span { lo: 185, hi: 558 },
+                    }),
+                    due: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
+                    out: Some(SString {
+                        node: indoc! {"
+                            What's the buzz? Tell me what's happening
+                            What's the buzz? Tell me what's happening
+                            What's the buzz? Tell me what's happening
+                        "}
+                        .to_string(),
+                        span: Span { lo: 54, hi: 182 },
+                    }),
+                })],
+            },
+        )
     }
 }

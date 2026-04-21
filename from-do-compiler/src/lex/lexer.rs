@@ -146,7 +146,12 @@ where
             }
 
             BlockToken::Separation(v) => {
-                tokens.push(Token::Line(v));
+                for (offset, line) in v.node.char_indices() {
+                    tokens.push(Token::Line(
+                        SString::new(line.to_string(), offset, offset + line.len_utf8())
+                            + v.span.lo,
+                    ));
+                }
             }
 
             BlockToken::Directive(ref v) => {
@@ -288,31 +293,11 @@ mod tests {
         );
     }
 
-    fn assert_panic(input: Vec<BlockToken>, rest: SString, block: SString, re: &Regex) {
-        let r = std::panic::catch_unwind(|| {
-            Lexer::new(auto_span(input.into_iter())).collect::<Vec<_>>()
-        });
-
-        assert!(r.is_err());
-        let err = r.err().unwrap();
-        let message = err
-            .downcast_ref::<String>()
-            .map(|s| s.as_str())
-            .unwrap_or("<non-string panic message>");
-
-        assert_eq!(
-            message,
-            format!(
-                "Unexpected string in block: {} in {}. Expected {}.",
-                rest,
-                block,
-                re.as_str()
-            )
-        );
-    }
-
     #[test]
     fn sanity() {
+        //| :now 2026-04-08T08:00:00Z
+        //|
+        //| -	Hello, FromDo! due 2026-04-08T08:00:00Z
         assert_vec_token(
             vec![
                 bt!(BlockToken::Directive, ":now 2026-04-08T08:00:00Z"),
@@ -329,7 +314,8 @@ mod tests {
                 Token::DirectiveArg(SString::new("now", 1, 4)),
                 Token::Space(SString::new(" ", 4, 5)),
                 Token::DirectiveArg(SString::new("2026-04-08T08:00:00Z", 5, 25)),
-                Token::Line(SString::new("\n\n", 25, 27)),
+                Token::Line(SString::new("\n", 25, 26)),
+                Token::Line(SString::new("\n", 26, 27)),
                 Token::ToDoHead(SString::new("-", 27, 28)),
                 Token::ToDoIndent(SString::new("\t", 28, 29)),
                 Token::ToDoContent(SString::new(
@@ -345,61 +331,74 @@ mod tests {
 
     #[test]
     fn directive_1() {
+        //| :FromDo
         assert_vec_token(
-            vec![bt!(BlockToken::Directive, ":test")],
+            vec![bt!(BlockToken::Directive, ":FromDo")],
             vec![
                 Token::DirectiveHead(SString::new(":", 0, 1)),
-                Token::DirectiveArg(SString::new("test", 1, 5)),
+                Token::DirectiveArg(SString::new("FromDo", 1, 7)),
             ],
         );
     }
 
     #[test]
-    fn directive_3() {
+    fn directive_tz() {
+        //| :tz America/New_York
         assert_vec_token(
-            vec![bt!(BlockToken::Directive, ":test xx yy zz")],
+            vec![bt!(BlockToken::Directive, ":tz America/New_York")],
             vec![
                 Token::DirectiveHead(SString::new(":", 0, 1)),
-                Token::DirectiveArg(SString::new("test", 1, 5)),
-                Token::Space(SString::new(" ", 5, 6)),
-                Token::DirectiveArg(SString::new("xx", 6, 8)),
-                Token::Space(SString::new(" ", 8, 9)),
-                Token::DirectiveArg(SString::new("yy", 9, 11)),
-                Token::Space(SString::new(" ", 11, 12)),
-                Token::DirectiveArg(SString::new("zz", 12, 14)),
+                Token::DirectiveArg(SString::new("tz", 1, 3)),
+                Token::Space(SString::new(" ", 3, 4)),
+                Token::DirectiveArg(SString::new("America/New_York", 4, 20)),
+            ],
+        );
+    }
+
+    #[test]
+    fn directive_null() {
+        //| :
+        assert_vec_token(
+            vec![bt!(BlockToken::Directive, ":")],
+            vec![Token::DirectiveHead(SString::new(":", 0, 1))],
+        );
+    }
+
+    #[test]
+    fn directive_3() {
+        //| :FromDo buzz now
+        assert_vec_token(
+            vec![bt!(BlockToken::Directive, ":FromDo buzz now")],
+            vec![
+                Token::DirectiveHead(SString::new(":", 0, 1)),
+                Token::DirectiveArg(SString::new("FromDo", 1, 7)),
+                Token::Space(SString::new(" ", 7, 8)),
+                Token::DirectiveArg(SString::new("buzz", 8, 12)),
+                Token::Space(SString::new(" ", 12, 13)),
+                Token::DirectiveArg(SString::new("now", 13, 16)),
             ],
         );
     }
 
     #[test]
     fn directive_partial() {
+        //| : FromDo buzz
         assert_vec_token(
-            vec![bt!(BlockToken::Directive, ": test xx yy ")],
+            vec![bt!(BlockToken::Directive, ": FromDo buzz ")],
             vec![
                 Token::DirectiveHead(SString::new(":", 0, 1)),
                 Token::Space(SString::new(" ", 1, 2)),
-                Token::DirectiveArg(SString::new("test", 2, 6)),
-                Token::Space(SString::new(" ", 6, 7)),
-                Token::DirectiveArg(SString::new("xx", 7, 9)),
-                Token::Space(SString::new(" ", 9, 10)),
-                Token::DirectiveArg(SString::new("yy", 10, 12)),
-                Token::Space(SString::new(" ", 12, 13)),
+                Token::DirectiveArg(SString::new("FromDo", 2, 8)),
+                Token::Space(SString::new(" ", 8, 9)),
+                Token::DirectiveArg(SString::new("buzz", 9, 13)),
+                Token::Space(SString::new(" ", 13, 14)),
             ],
         );
     }
 
     #[test]
-    fn directive_panic() {
-        assert_panic(
-            vec![bt!(BlockToken::Directive, "test"), bt!(BlockToken::EOF, "")],
-            SString::new("test", 0, 4),
-            SString::new("test", 0, 4),
-            &re::DIRECTIVE_HEAD,
-        );
-    }
-
-    #[test]
     fn todo_header_simple() {
+        //| -	FromDo
         assert_vec_token(
             vec![bt!(BlockToken::ToDoHeader, "-\tFromDo")],
             vec![
@@ -412,6 +411,7 @@ mod tests {
 
     #[test]
     fn todo_header_complex() {
+        //| -	Hello, FromDo! due 2026-04-08T08:00:00Z
         assert_vec_token(
             vec![bt!(
                 BlockToken::ToDoHeader,
@@ -431,6 +431,7 @@ mod tests {
 
     #[test]
     fn todo_header_null() {
+        //| -
         assert_vec_token(
             vec![bt!(BlockToken::ToDoHeader, "-\t")],
             vec![
@@ -441,72 +442,50 @@ mod tests {
     }
 
     #[test]
-    fn todo_header_panic() {
-        assert_panic(
-            vec![
-                bt!(BlockToken::ToDoHeader, "FromDo"),
-                bt!(BlockToken::EOF, ""),
-            ],
-            SString::new("FromDo", 0, 6),
-            SString::new("FromDo", 0, 6),
-            &re::TODO_HEAD,
-        );
-        assert_panic(
-            vec![
-                bt!(BlockToken::ToDoHeader, "-FromDo"),
-                bt!(BlockToken::EOF, ""),
-            ],
-            SString::new("FromDo", 1, 7),
-            SString::new("-FromDo", 0, 7),
-            &re::TODO_INDENT,
+    fn todo_continuation_null() {
+        //|
+        assert_vec_token(
+            vec![bt!(BlockToken::ToDoContinuation, "\t")],
+            vec![Token::ToDoIndent(SString::new("\t", 0, 1))],
         );
     }
 
     #[test]
     fn todo_continuation_simple() {
+        //| 	What's the buzz?
         assert_vec_token(
-            vec![bt!(BlockToken::ToDoContinuation, "\twhat's the buzz?")],
+            vec![bt!(BlockToken::ToDoContinuation, "\tWhat's the buzz?")],
             vec![
                 Token::ToDoIndent(SString::new("\t", 0, 1)),
-                Token::ToDoContent(SString::new("what's the buzz?", 1, 17)),
+                Token::ToDoContent(SString::new("What's the buzz?", 1, 17)),
             ],
         );
     }
 
     #[test]
     fn todo_continuation_partial() {
+        //| 	 Hello, FromDo!
         assert_vec_token(
-            vec![bt!(BlockToken::ToDoContinuation, "\t ^_^ ")],
+            vec![bt!(BlockToken::ToDoContinuation, "\t Hello, FromDo! ")],
             vec![
                 Token::ToDoIndent(SString::new("\t", 0, 1)),
-                Token::ToDoContent(SString::new(" ^_^ ", 1, 6)),
+                Token::ToDoContent(SString::new(" Hello, FromDo! ", 1, 17)),
             ],
-        );
-    }
-
-    #[test]
-    fn todo_continuation_panic() {
-        assert_panic(
-            vec![
-                bt!(BlockToken::ToDoContinuation, "FromDo"),
-                bt!(BlockToken::EOF, ""),
-            ],
-            SString::new("FromDo", 0, 6),
-            SString::new("FromDo", 0, 6),
-            &re::TODO_INDENT,
         );
     }
 
     #[test]
     fn error() {
+        //| What's the buzz?
         assert_vec_token(
-            vec![bt!(BlockToken::Error, "what's the buzz?")],
-            vec![Token::Error(SString::new("what's the buzz?", 0, 16))],
+            vec![bt!(BlockToken::Error, "What's the buzz?")],
+            vec![Token::Error(SString::new("What's the buzz?", 0, 16))],
         );
     }
 
     #[test]
     fn eof() {
+        // empty input
         assert_vec_token(
             vec![bt!(BlockToken::EOF, "")],
             vec![Token::EOF(SString::new("", 0, 0))],
