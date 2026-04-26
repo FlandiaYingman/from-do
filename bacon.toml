@@ -1,0 +1,31 @@
+# Bacon project settings for from-do-cli.
+#
+# Run with `bacon` (uses the default `run` job below) from the `from-do-cli`
+# directory. Bacon will rebuild and restart the binary whenever any watched
+# Rust source changes.
+#
+# To pass different arguments, run a one-off job, eg:
+#   bacon run -- -- watch ./some-dir
+#
+# See https://dystroy.org/bacon/config/
+
+default_job = "run"
+
+[jobs.run]
+command = [
+    "cargo", "run",
+    "--package", "from-do-cli",
+    "--",
+    "watch", ".",
+]
+need_stdout = true
+allow_warnings = true
+on_change_strategy = "kill_then_restart"
+
+# Also watch sibling crates so changes to the compiler/cur libraries restart
+# the running cli. `src/` of this package is watched implicitly.
+watch = [
+    "./from-do-compiler",
+    "./from-do-cur",
+    "./from-do-cli",
+]

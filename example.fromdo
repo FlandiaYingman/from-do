@@ -1,0 +1,71 @@
+-	Hello, From Do!
+	due today
+	late due tomorrow
+	
+	This is an example task in From Do language. 
+	
+	A From-Do task is defined by a "-" or "+", and then a tab, and then the
+	subject of the task. "-" means the task is a "to-do" task, which is a task
+	that is yet to be done. "+" means the task is a "not-to-do" task, which is a
+	task that is already done. 
+	
+	Then, optionally, the task can have properties, which are defined in the lines
+	immediately after the subject, prefixed by also a tab character, and followed
+	by a "due" or "late due" keyword. 
+	
+	Then, optionally, the task can have a body, which is paragraphs of text after
+	the subject and properties. There must be a new line followed by a tab
+	character between the subect/properties and the body. 
+	
+	The due date of this task is set to today. The late due date of this task is
+	set to next Monday. The date and time are relative to the current date and
+	time. 
+	
+	On save, the compiler compiles the task, and yields the same task with
+	canonical syntax. The due and late due properties are also fixed to be in ISO
+	8601 format. However, the relative date and time are also preserved, and they
+	are updated whenever the local date and time changes.
+
++	Goodbye, From Do!
+	
+	This is a task without properties. It is also a "not-to-do" task.
+
+:now 1970-01-01T00:00:00+00:00[UTC]
+
+-	Time Machine... Let's go to the UNIX epoch!
+	due today
+	late due on 27 Apr 2026
+	
+	A line beginning with ":" is a directive. It's like a meta statement to the
+	compiler that is not part of the task structure. The ":now" directive set the
+	current date and time. This is useful for testing and demo'ing!
+	
+	Try to revert and save the file again to see how the compiler updates the due
+	date and late due date. The late due changes from "on 27 Apr 2026" to "in
+	20570 days" (depending on the timestamp you run this at). Both formats are
+	accepted by the parser, but the formatter prefers the "calendar offset"
+	format.
+
+-	That's all?
+	
+	Yeah. That's all for the demo. I had a bad time management, so most planned
+	tasks weren't actually done on time (all because From Do wansn't there!). Now
+	with From Do, I can surely do better in the future.
+	
+	Of course, the future work include:
+	
+	- Support more properties, such as "recurring" and "priority".
+	- Support task layouts, i.e., sectioning tasks.
+	- Support scheduling the tasks.
+	- Create a LSP for From Do.
+	
+	The recurring property is one of the most interesting property that I'm
+	planning to implement. It changes the current task into a "task generator",
+	and generates tasks according to the recurring pattern. The data model,
+	parsing logic, and formatting logic of recurring is already designed there,
+	but I haven't yet had time to implement it.
+
+-	From Do: Support recurring task.
+	due next Monday
+	late due next Sunday
+	
