@@ -37,6 +37,16 @@
                 "editor.detectIndentation": false,
                 "editor.insertSpaces": false,
                 "editor.tabSize": 4
+            },
+            "editor.tokenColorCustomizations": {
+                "textMateRules": [
+                    {
+                        "scope": "keyword.operator.todo.fromdo",
+                        "settings": {
+                            "fontStyle": "bold"
+                        }
+                    }
+                ]
             }
         }
     }

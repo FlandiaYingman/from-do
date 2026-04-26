@@ -45,7 +45,7 @@
       "match": "^(\\t)(.*)$",
       "captures": {
         "1": { "name": "punctuation.whitespace.indent.fromdo" },
-        "2": { "name": "string.unquoted.todo-body.fromdo" }
+        "2": { "name": "meta.todo-body.fromdo" }
       }
     }
   }
