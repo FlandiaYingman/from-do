@@ -17,7 +17,12 @@ impl Evaluator {
         Self {
             context: Context {
                 // TODO: parent: None,
-                now: jiff::Zoned::now(),
+                now: jiff::Zoned::now()
+                    .with()
+                    .time(jiff::civil::Time::MAX)
+                    .subsec_nanosecond(0)
+                    .build()
+                    .unwrap(),
                 tz: jiff::tz::TimeZone::system(),
             },
         }
