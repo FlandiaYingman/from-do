@@ -214,6 +214,11 @@ where
                 tokens.push(Token::ToDoIndent(indent));
                 rest = vv;
 
+                while let Some((indent, vv)) = next_match(&rest, &re::TODO_INDENT) {
+                    tokens.push(Token::ToDoIndent(indent));
+                    rest = vv;
+                }
+
                 if let Some((content, vv)) = next_match(&rest, &re::TODO_CONTENT) {
                     tokens.push(Token::ToDoContent(content));
                     rest = vv;

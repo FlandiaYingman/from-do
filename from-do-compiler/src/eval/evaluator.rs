@@ -1,4 +1,5 @@
-use crate::lex::*;
+use from_do_cur::cur;
+
 use crate::parse::*;
 
 pub struct Evaluator {
@@ -19,65 +20,6 @@ impl Evaluator {
                 now: jiff::Zoned::now(),
                 tz: jiff::tz::TimeZone::system(),
             },
-        }
-    }
-
-    fn format_due(now: &jiff::Zoned, due: &jiff::Zoned) -> String {
-        let span = now
-            .until(
-                jiff::ZonedDifference::new(due)
-                    .largest(jiff::Unit::Hour)
-                    .smallest(jiff::Unit::Second)
-                    .mode(jiff::RoundMode::Trunc),
-            )
-            .unwrap();
-        let absolute = span.abs();
-
-        let amount = if absolute
-            .compare(jiff::Span::new().hours(24))
-            .unwrap()
-            .is_gt()
-        {
-            let span = absolute
-                .round(
-                    jiff::SpanRound::new()
-                        .largest(jiff::Unit::Day)
-                        .smallest(jiff::Unit::Hour)
-                        .mode(jiff::RoundMode::Trunc)
-                        .days_are_24_hours(),
-                )
-                .unwrap();
-            format!("{}d {}h", span.get_days(), span.get_hours())
-        } else if absolute
-            .compare(jiff::Span::new().hours(1))
-            .unwrap()
-            .is_gt()
-        {
-            let span = absolute
-                .round(
-                    jiff::SpanRound::new()
-                        .largest(jiff::Unit::Hour)
-                        .smallest(jiff::Unit::Minute)
-                        .mode(jiff::RoundMode::Trunc),
-                )
-                .unwrap();
-            format!("{}h {}m", span.get_hours(), span.get_minutes())
-        } else {
-            let span = absolute
-                .round(
-                    jiff::SpanRound::new()
-                        .largest(jiff::Unit::Minute)
-                        .smallest(jiff::Unit::Second)
-                        .mode(jiff::RoundMode::Trunc),
-                )
-                .unwrap();
-            format!("{}m {}s", span.get_minutes(), span.get_seconds())
-        };
-
-        if span.is_negative() {
-            format!("(due {amount} ago)")
-        } else {
-            format!("(due in {amount})")
         }
     }
 
@@ -113,11 +55,62 @@ impl Evaluator {
             Block::ToDo(todo) => {
                 let mut target = todo.clone();
                 if let Some(due) = &todo.due {
-                    target.due = Some(due.with_time_zone(context.tz.clone()));
-                    target.out = Some(SString {
-                        span: Span { lo: 0, hi: 0 }, // TODO: meaningless span
-                        node: Self::format_due(&context.now, due),
-                    });
+                    match due {
+                        property::Due {
+                            rel: None,
+                            ts: None,
+                        } => {
+                            panic!("invalid due property: both rel and ts are None");
+                        }
+                        property::Due {
+                            rel: Some(rel),
+                            ts: None,
+                        } => {
+                            let ts = rel.resolve(&context.now);
+                            target.due = Some(property::Due {
+                                rel: Some(rel.clone()),
+                                ts: Some(ts),
+                            });
+                        }
+                        property::Due {
+                            rel: _,
+                            ts: Some(ts),
+                        } => {
+                            target.due = Some(property::Due {
+                                rel: Some(cur::Phrase::unresolve(ts, &context.now)),
+                                ts: Some(ts.clone()),
+                            });
+                        }
+                    }
+                }
+                if let Some(late_due) = &todo.late_due {
+                    match late_due {
+                        property::Due {
+                            rel: None,
+                            ts: None,
+                        } => {
+                            panic!("invalid late_due property: both rel and ts are None");
+                        }
+                        property::Due {
+                            rel: Some(rel),
+                            ts: None,
+                        } => {
+                            let ts = rel.resolve(&context.now);
+                            target.late_due = Some(property::Due {
+                                rel: Some(rel.clone()),
+                                ts: Some(ts),
+                            });
+                        }
+                        property::Due {
+                            rel: _,
+                            ts: Some(ts),
+                        } => {
+                            target.late_due = Some(property::Due {
+                                rel: Some(cur::Phrase::unresolve(ts, &context.now)),
+                                ts: Some(ts.clone()),
+                            });
+                        }
+                    }
                 }
                 Ok(Block::ToDo(target))
             }
@@ -128,6 +121,7 @@ impl Evaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lex::*;
     use pretty_assertions::assert_eq;
 
     fn ts(value: &str) -> jiff::Zoned {
@@ -146,8 +140,21 @@ mod tests {
         assert_eq!(Evaluator::new().eval(&input), Err(expected));
     }
 
-    fn assert_format_due(now: &str, due: &str, expected: &str) {
-        assert_eq!(Evaluator::format_due(&ts(now), &ts(due)), expected);
+    fn due_ts(value: &str) -> property::Due {
+        property::Due {
+            rel: Some(cur::Phrase::unresolve(
+                &ts(value),
+                &ts("2026-04-08T08:00:00+00:00[UTC]"),
+            )),
+            ts: Some(ts(value)),
+        }
+    }
+
+    fn due_ts_ref(value: &str, reference: &str) -> property::Due {
+        property::Due {
+            rel: Some(cur::Phrase::unresolve(&ts(value), &ts(reference))),
+            ts: Some(ts(value)),
+        }
     }
 
     #[test]
@@ -155,7 +162,10 @@ mod tests {
         //| :tz UTC
         //| :now 2026-04-08T08:00:00+00:00[UTC]
         //|
-        //| -	Hello, FromDo! due 2026-04-08T12:00:00+00:00[UTC]
+        //| -	Hello, FromDo!
+        //| 	due
+        //| 		2026-04-08T12:00:00+00:00[UTC]
+        //|
         //| 	What's the buzz?
         let input = Program {
             blocks: vec![
@@ -168,12 +178,15 @@ mod tests {
                         span: Span { lo: 1, hi: 15 },
                         node: "Hello, FromDo!".to_string(),
                     },
-                    body: None,
-                    due: Some(ts("2026-04-08T12:00:00+00:00[UTC]")),
-                    out: Some(SString {
-                        span: Span { lo: 1, hi: 17 },
-                        node: "What's the buzz?".to_string(),
+                    body: Some(SString {
+                        span: Span { lo: 1, hi: 18 },
+                        node: "What's the buzz?\n".to_string(),
                     }),
+                    due: Some(property::Due {
+                        rel: None,
+                        ts: Some(ts("2026-04-08T12:00:00+00:00[UTC]")),
+                    }),
+                    late_due: None,
                 }),
             ],
         };
@@ -190,12 +203,12 @@ mod tests {
                             span: Span { lo: 1, hi: 15 },
                             node: "Hello, FromDo!".to_string(),
                         },
-                        body: None,
-                        due: Some(ts("2026-04-08T12:00:00+00:00[UTC]")),
-                        out: Some(SString {
-                            span: Span { lo: 0, hi: 0 },
-                            node: "(due in 4h 0m)".to_string(),
+                        body: Some(SString {
+                            span: Span { lo: 1, hi: 18 },
+                            node: "What's the buzz?\n".to_string(),
                         }),
+                        due: Some(due_ts("2026-04-08T12:00:00+00:00[UTC]")),
+                        late_due: None,
                     }),
                 ],
             },
@@ -207,8 +220,9 @@ mod tests {
         //| :tz America/New_York
         //| :now 2026-04-08T08:00:00+00:00[UTC]
         //|
-        //| -	Hello, FromDo! due 2026-04-08T08:00:00-04:00[America/New_York]
-        //| 	(due in 4h 0m)
+        //| -	Hello, FromDo!
+        //| 	due
+        //| 		2026-04-08T12:00:00+00:00[UTC]
         assert_eval_ok(
             Program {
                 blocks: vec![
@@ -224,8 +238,11 @@ mod tests {
                             node: "Hello, FromDo!".to_string(),
                         },
                         body: None,
-                        due: Some(ts("2026-04-08T12:00:00+00:00[UTC]")),
-                        out: None,
+                        due: Some(property::Due {
+                            rel: None,
+                            ts: Some(ts("2026-04-08T12:00:00+00:00[UTC]")),
+                        }),
+                        late_due: None,
                     }),
                 ],
             },
@@ -243,11 +260,8 @@ mod tests {
                             node: "Hello, FromDo!".to_string(),
                         },
                         body: None,
-                        due: Some(ts("2026-04-08T08:00:00-04:00[America/New_York]")),
-                        out: Some(SString {
-                            span: Span { lo: 0, hi: 0 },
-                            node: "(due in 4h 0m)".to_string(),
-                        }),
+                        due: Some(due_ts("2026-04-08T12:00:00+00:00[UTC]")),
+                        late_due: None,
                     }),
                 ],
             },
@@ -255,61 +269,100 @@ mod tests {
     }
 
     #[test]
-    fn todo_due_in_1() {
+    fn todo_due_rel_only() {
         //| :now 2026-04-08T08:00:00+00:00[UTC]
         //|
-        //| -	Hello, FromDo! due 2026-04-15T08:00:00+00:00[UTC]
-        //| 	(due in 7d 0h)
-        assert_format_due(
-            "2026-04-08T08:00:00+00:00[UTC]",
-            "2026-04-15T08:00:00+00:00[UTC]",
-            "(due in 7d 0h)",
+        //| -	Hello, FromDo!
+        //| 	due tomorrow
+        let now = "2026-04-08T08:00:00+00:00[UTC]";
+        let rel = cur::strpcur("tomorrow").unwrap();
+        let input = Program {
+            blocks: vec![
+                Block::Directive(Directive::Now(directive::Now { now: ts(now) })),
+                Block::ToDo(ToDo {
+                    head: SString {
+                        span: Span { lo: 1, hi: 15 },
+                        node: "Hello, FromDo!".to_string(),
+                    },
+                    body: None,
+                    due: Some(property::Due {
+                        rel: Some(rel.clone()),
+                        ts: None,
+                    }),
+                    late_due: None,
+                }),
+            ],
+        };
+        let resolved_ts = rel.resolve(&ts(now));
+        assert_eval_ok(
+            input,
+            Program {
+                blocks: vec![
+                    Block::Directive(Directive::Now(directive::Now { now: ts(now) })),
+                    Block::ToDo(ToDo {
+                        head: SString {
+                            span: Span { lo: 1, hi: 15 },
+                            node: "Hello, FromDo!".to_string(),
+                        },
+                        body: None,
+                        due: Some(property::Due {
+                            rel: Some(rel),
+                            ts: Some(resolved_ts),
+                        }),
+                        late_due: None,
+                    }),
+                ],
+            },
         );
     }
 
     #[test]
-    fn todo_due_in_2() {
+    fn todo_late_due() {
         //| :now 2026-04-08T08:00:00+00:00[UTC]
         //|
-        //| -	Hello, FromDo! due 2026-04-09T08:00:00+00:00[UTC]
-        //| 	(due in 24h 0m)
-        assert_format_due(
-            "2026-04-08T08:00:00+00:00[UTC]",
-            "2026-04-09T08:00:00+00:00[UTC]",
-            "(due in 24h 0m)",
+        //| -	Hello, FromDo!
+        //| 	late due
+        //| 		2026-04-09T08:00:00+00:00[UTC]
+        let now = "2026-04-08T08:00:00+00:00[UTC]";
+        let input = Program {
+            blocks: vec![
+                Block::Directive(Directive::Now(directive::Now { now: ts(now) })),
+                Block::ToDo(ToDo {
+                    head: SString {
+                        span: Span { lo: 1, hi: 15 },
+                        node: "Hello, FromDo!".to_string(),
+                    },
+                    body: None,
+                    due: None,
+                    late_due: Some(property::Due {
+                        rel: None,
+                        ts: Some(ts("2026-04-09T08:00:00+00:00[UTC]")),
+                    }),
+                }),
+            ],
+        };
+        assert_eval_ok(
+            input,
+            Program {
+                blocks: vec![
+                    Block::Directive(Directive::Now(directive::Now { now: ts(now) })),
+                    Block::ToDo(ToDo {
+                        head: SString {
+                            span: Span { lo: 1, hi: 15 },
+                            node: "Hello, FromDo!".to_string(),
+                        },
+                        body: None,
+                        due: None,
+                        late_due: Some(due_ts_ref("2026-04-09T08:00:00+00:00[UTC]", now)),
+                    }),
+                ],
+            },
         );
     }
 
     #[test]
-    fn todo_due_in_3() {
-        //| :now 2026-04-08T08:00:00+00:00[UTC]
-        //|
-        //| -	Hello, FromDo! due 2026-04-08T09:00:00+00:00[UTC]
-        //| 	(due in 60m 0s)
-        assert_format_due(
-            "2026-04-08T08:00:00+00:00[UTC]",
-            "2026-04-08T09:00:00+00:00[UTC]",
-            "(due in 60m 0s)",
-        );
-    }
-
-    #[test]
-    fn todo_due_ago_1() {
-        //| :now 2026-04-08T12:30:00+00:00[UTC]
-        //|
-        //| -	Hello, FromDo! due 2026-04-08T08:00:00+00:00[UTC]
-        //| 	(due 4h 30m ago)
-        assert_format_due(
-            "2026-04-08T12:30:00+00:00[UTC]",
-            "2026-04-08T08:00:00+00:00[UTC]",
-            "(due 4h 30m ago)",
-        );
-    }
-
-    #[test]
-    fn todo_out_1() {
+    fn todo_no_due() {
         //| -	FromDo
-        //| 	What's the buzz?
         let input = Program {
             blocks: vec![Block::ToDo(ToDo {
                 head: SString {
@@ -318,10 +371,7 @@ mod tests {
                 },
                 body: None,
                 due: None,
-                out: Some(SString {
-                    span: Span { lo: 1, hi: 17 },
-                    node: "What's the buzz?".to_string(),
-                }),
+                late_due: None,
             })],
         };
         assert_eval_ok(input.clone(), input);

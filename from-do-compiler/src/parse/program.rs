@@ -1,4 +1,6 @@
 use crate::lex::*;
+use from_do_cur::cur;
+use from_do_cur::recur;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Block {
@@ -26,6 +28,13 @@ pub enum Error {
     },
     TimeZoneParseError {
         time_zone: SString,
+        message: String,
+    },
+    UnknownToDoProp {
+        property: SString,
+    },
+    CurParseError {
+        input: SString,
         message: String,
     },
 }
@@ -64,7 +73,21 @@ pub struct ToDo {
     pub head: SString,
     pub body: Option<SString>,
 
-    pub due: Option<jiff::Zoned>,
+    pub due: Option<property::Due>,
+    pub late_due: Option<property::Due>,
+}
 
-    pub out: Option<SString>,
+pub mod property {
+    use super::*;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Due {
+        pub rel: Option<cur::Phrase>,
+        pub ts: Option<jiff::Zoned>,
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Recurring {
+        pub pattern: recur::Pattern,
+    }
 }

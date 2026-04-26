@@ -1,16 +1,15 @@
 use super::*;
 use crate::lex::*;
 
+use from_do_cur::cur;
+use from_do_cur::recur;
+
 use Error::*;
 use jiff::tz::TimeZone;
 
-use std::iter::Peekable;
-
-pub struct Parser<Iter>
-where
-    Iter: Iterator<Item = Token>,
-{
-    source: Peekable<Iter>,
+pub struct Parser {
+    source: Vec<Token>,
+    cursor: usize,
     progress: Span,
 }
 
@@ -22,10 +21,10 @@ mod re {
     use regex::Regex;
     use std::sync::LazyLock as LL;
 
-    static TODO_HEAD_DUE: LL<Regex> = LL::new(|| Regex::new(r"^(.*) due (\S+)$").unwrap());
+    static TODO_PROP_HEAD: LL<Regex> = LL::new(|| Regex::new(r"^(due|late due) ?(.*)$").unwrap());
 
-    pub fn todo_head_due(head: &SString) -> Option<(SString, SString)> {
-        TODO_HEAD_DUE
+    pub fn todo_prop_head(head: &SString) -> Option<(SString, SString)> {
+        TODO_PROP_HEAD
             .captures(&head.node)
             .map(|caps| (caps.get(1).unwrap(), caps.get(2).unwrap()))
             .map(|(m1, m2)| {
@@ -49,20 +48,42 @@ mod re {
     }
 }
 
-impl<Iter> Parser<Iter>
-where
-    Iter: Iterator<Item = Token>,
-{
-    pub fn new(input: Iter) -> Self {
+impl Parser {
+    pub fn new<Iter>(input: Iter) -> Self
+    where
+        Iter: IntoIterator<Item = Token>,
+    {
         Self {
-            source: input.peekable(),
+            source: input.into_iter().collect(),
+            cursor: 0,
             progress: Span { lo: 0, hi: 0 },
         }
     }
 
+    /// Snapshot the current parser position so it can be restored later via
+    /// [`Self::restore`]. The returned value is opaque and only valid for the
+    /// parser instance that produced it.
+    fn checkpoint(&self) -> (usize, Span) {
+        (self.cursor, self.progress)
+    }
+
+    /// Restore a previously taken [`Self::checkpoint`], rewinding the cursor
+    /// and progress span. Tokens consumed after the checkpoint will be
+    /// re-yielded by subsequent calls to [`Self::next`] / [`Self::peek`].
+    fn restore(&mut self, checkpoint: (usize, Span)) {
+        let (cursor, progress) = checkpoint;
+        self.cursor = cursor;
+        self.progress = progress;
+    }
+
+    fn peek(&self) -> Option<&Token> {
+        self.source.get(self.cursor)
+    }
+
     fn next(&mut self, expected: &'static str) -> Result<Token> {
-        match self.source.next() {
+        match self.source.get(self.cursor).cloned() {
             Some(token) => {
+                self.cursor += 1;
                 self.progress += token.span();
                 Ok(token)
             }
@@ -79,13 +100,13 @@ where
     pub fn program(&mut self) -> Program {
         let mut blocks = Vec::new();
 
-        while let Some(node) = self.source.peek() {
+        while let Some(node) = self.peek() {
             if let Token::Line(_) = node {
-                self.source.next().unwrap();
+                self.cursor += 1;
                 continue;
             }
             if let Token::EOF(_) = node {
-                self.source.next().unwrap();
+                self.cursor += 1;
                 break;
             }
             blocks.push(self.block());
@@ -145,6 +166,22 @@ where
         }
     }
 
+    /// Consume a [`Token::Line`] or accept an upcoming [`Token::EOF`] (without
+    /// consuming it, so the surrounding [`Self::program`] loop still observes
+    /// the EOF and terminates). Returns an empty [`SString`] in the EOF case.
+    fn line_or_eof(&mut self) -> Result<SString> {
+        if let Some(Token::EOF(s)) = self.peek() {
+            return Ok(SString {
+                node: String::new(),
+                span: Span {
+                    lo: s.span.hi,
+                    hi: s.span.hi,
+                },
+            });
+        }
+        self.line()
+    }
+
     const SPACE_EXPECTED: &'static str = "space";
     fn space(&mut self) -> Result<Token> {
         match self.next(Self::SPACE_EXPECTED)? {
@@ -189,36 +226,27 @@ where
     fn todo(&mut self) -> Result<ToDo> {
         let _ = self.todo_indent()?;
         let head = self.todo_content()?;
-        let _ = self.line()?;
+        let _ = self.line_or_eof()?;
 
-        let (head, due) = match re::todo_head_due(&head) {
-            Some((head, due)) => (head, Some(Self::timestamp(&due)?)),
-            None => (head, None),
-        };
-
-        let mut out_vec = Vec::new();
-        while let Some(Token::ToDoIndent(_)) = self.source.peek() {
+        let mut due = None;
+        let mut late_due = None;
+        // let mut recurring = None;
+        while let Some(Token::ToDoIndent(_)) = self.peek() {
             let _ = self.todo_indent().unwrap();
-            if let Some(Token::Line(_)) = self.source.peek() {
+            if let Some(Token::Line(_)) = self.peek() {
                 let _ = self.line().unwrap();
                 break;
             }
-            let content = self.todo_content()?;
-            out_vec.push(content);
-            let line = self.line()?;
-            out_vec.push(line);
+            let (d, ld, _) = self.todo_prop()?;
+            due = d.or(due);
+            late_due = ld.or(late_due);
         }
-        let out = if out_vec.is_empty() {
-            None
-        } else {
-            Some(out_vec.into_iter().reduce(|c1, c2| c1 + c2).unwrap())
-        };
 
         let mut body_vec = Vec::new();
-        'a: while let Some(Token::ToDoIndent(_)) = self.source.peek() {
+        'a: while let Some(Token::ToDoIndent(_)) = self.peek() {
             let _ = self.todo_indent().unwrap();
             'b: loop {
-                if let Some(Token::Line(_)) = self.source.peek() {
+                if let Some(Token::Line(_)) = self.peek() {
                     let line = self.line().unwrap();
                     body_vec.push(line);
                     continue 'a;
@@ -228,7 +256,7 @@ where
             }
             let content = self.todo_content()?;
             body_vec.push(content);
-            let line = self.line()?;
+            let line = self.line_or_eof()?;
             body_vec.push(line);
         }
         let body = if body_vec.is_empty() {
@@ -241,8 +269,98 @@ where
             head,
             body,
             due,
-            out,
+            late_due,
         })
+    }
+
+    fn todo_prop(
+        &mut self,
+    ) -> Result<(
+        Option<property::Due>,       // due
+        Option<property::Due>,       // late due
+        Option<property::Recurring>, // recurring
+    )> {
+        let mut due = None;
+        let mut late_due = None;
+        let mut recurring = None;
+
+        let prop_content = self.todo_content()?;
+        let (prop_head, prop_arg_head) = match re::todo_prop_head(&prop_content) {
+            Some((head, arg)) => (head, arg),
+            None => {
+                return Err(Error::UnknownToDoProp {
+                    property: prop_content,
+                });
+            }
+        };
+        let _ = self.line_or_eof()?;
+
+        match prop_head.node.as_str() {
+            "due" => {
+                let prop_rel_str = prop_arg_head;
+                let prop_rel = (!prop_rel_str.node.is_empty())
+                    .then(|| Self::cur(&prop_rel_str))
+                    .transpose()?;
+
+                let prop_ts = self.todo_prop_ts()?;
+
+                due = Some(property::Due {
+                    rel: prop_rel,
+                    ts: prop_ts,
+                });
+            }
+            "late due" => {
+                let prop_rel_str = prop_arg_head;
+                let prop_rel = (!prop_rel_str.node.is_empty())
+                    .then(|| Self::cur(&prop_rel_str))
+                    .transpose()?;
+
+                let prop_ts = self.todo_prop_ts()?;
+
+                late_due = Some(property::Due {
+                    rel: prop_rel,
+                    ts: prop_ts,
+                });
+            }
+            "recurring" => {
+                let prop_pattern_str = prop_arg_head;
+                let prop_pattern = Self::recur(&prop_pattern_str)?;
+                let _ = self.line_or_eof()?;
+
+                recurring = Some(property::Recurring {
+                    pattern: prop_pattern,
+                });
+            }
+            _ => panic!(
+                "unreachable: re::todo_prop_head should only capture 'due', 'late due', or 'recurring'"
+            ),
+        }
+
+        Ok((due, late_due, recurring))
+    }
+
+    /// Try to consume the optional `\t\t<timestamp>\n` line that may follow a
+    /// `due`/`late due` property head. If the next two tokens are not
+    /// `ToDoIndent`, the cursor is restored and `None` is returned.
+    fn todo_prop_ts(&mut self) -> Result<Option<jiff::Zoned>> {
+        let cp = self.checkpoint();
+        let first_is_indent = matches!(self.peek(), Some(Token::ToDoIndent(_)));
+        if !first_is_indent {
+            return Ok(None);
+        }
+        let _ = self.todo_indent().unwrap();
+        let second_is_indent = matches!(self.peek(), Some(Token::ToDoIndent(_)));
+        if !second_is_indent {
+            self.restore(cp);
+            return Ok(None);
+        }
+        let _ = self.todo_indent().unwrap();
+        let prop_ts_str = self.todo_content()?;
+        let prop_ts = (!prop_ts_str.node.is_empty())
+            .then(|| Self::timestamp(&prop_ts_str))
+            .transpose()?;
+        let _ = self.line_or_eof()?;
+        Ok(prop_ts)
     }
 
     const TODO_INDENT_EXPECTED: &'static str = "todo indent";
@@ -268,10 +386,7 @@ where
     }
 }
 
-impl<Iter> Parser<Iter>
-where
-    Iter: Iterator<Item = Token>,
-{
+impl Parser {
     fn timestamp(timestamp_str: &SString) -> Result<jiff::Zoned> {
         timestamp_str
             .node
@@ -285,6 +400,20 @@ where
     fn time_zone(tz_str: &SString) -> Result<jiff::tz::TimeZone> {
         TimeZone::get(&tz_str.node).map_err(|err| TimeZoneParseError {
             time_zone: tz_str.clone(),
+            message: err.to_string(),
+        })
+    }
+
+    fn cur(cur_str: &SString) -> Result<cur::Phrase> {
+        cur::strpcur(&cur_str.node.clone()).map_err(|err| Error::CurParseError {
+            input: cur_str.clone(),
+            message: err.to_string(),
+        })
+    }
+
+    fn recur(recur_str: &SString) -> Result<recur::Pattern> {
+        recur::strprecur(&recur_str.node.clone()).map_err(|err| Error::CurParseError {
+            input: recur_str.clone(),
             message: err.to_string(),
         })
     }
@@ -342,7 +471,7 @@ mod tests {
         );
     }
 
-    type Parser = _Parser<std::vec::IntoIter<Token>>;
+    type Parser = _Parser;
 
     #[test]
     fn sanity_0() {
@@ -354,7 +483,9 @@ mod tests {
     fn sanity_1() {
         //| :now 2026-04-08T08:00:00+00:00[UTC]
         //|
-        //| -	Hello, FromDo! due 2026-04-08T08:00:00+00:00[UTC]
+        //| -	Hello, FromDo!
+        //| 	due
+        //| 		2026-04-08T08:00:00+00:00[UTC]
         assert_program(
             vec![
                 t!(Token::DirectiveHead, ":"),
@@ -365,10 +496,14 @@ mod tests {
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(
-                    Token::ToDoContent,
-                    "Hello, FromDo! due 2026-04-08T08:00:00+00:00[UTC]"
-                ),
+                t!(Token::ToDoContent, "Hello, FromDo!"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "due"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "2026-04-08T08:00:00+00:00[UTC]"),
                 t!(Token::Line, "\n"),
                 t!(Token::EOF, ""),
             ],
@@ -383,8 +518,11 @@ mod tests {
                             span: Span { lo: 39, hi: 53 },
                         },
                         body: None,
-                        due: Some(ts("2026-04-08T08:00:00+00:00[UTC]")),
-                        out: None,
+                        due: Some(property::Due {
+                            rel: None,
+                            ts: Some(ts("2026-04-08T08:00:00+00:00[UTC]")),
+                        }),
+                        late_due: None,
                     }),
                 ],
             },
@@ -393,16 +531,71 @@ mod tests {
 
     #[test]
     fn sanity_2() {
+        //| -	Hello, FromDo!
+        //| 	due
+        //| 		2026-04-08T08:00:00+00:00[UTC]
+        //| 	late due
+        //| 		2026-04-09T08:00:00+00:00[UTC]
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "Hello, FromDo!"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "due"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "2026-04-08T08:00:00+00:00[UTC]"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "late due"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "2026-04-09T08:00:00+00:00[UTC]"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    head: SString {
+                        node: "Hello, FromDo!".to_string(),
+                        span: Span { lo: 2, hi: 16 },
+                    },
+                    body: None,
+                    due: Some(property::Due {
+                        rel: None,
+                        ts: Some(ts("2026-04-08T08:00:00+00:00[UTC]")),
+                    }),
+                    late_due: Some(property::Due {
+                        rel: None,
+                        ts: Some(ts("2026-04-09T08:00:00+00:00[UTC]")),
+                    }),
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn sanity_3() {
         //|
         //|
         //| :now 2026-04-08T08:00:00+00:00[UTC]
         //|
         //| :now 2026-04-01T08:00:00+00:00[UTC]
         //|
-        //| -	Hello, FromDo! due 2026-04-08T08:00:00+00:00[UTC]
+        //| -	Hello, FromDo!
+        //| 	due
+        //| 		2026-04-08T08:00:00+00:00[UTC]
+        //|
         //| 	What's the buzz?
         //|
-        //| -	Hello, FromDo! due 2026-04-01T08:00:00+00:00[UTC]
+        //| -	Hello, FromDo!
+        //| 	due
+        //| 		2026-04-01T08:00:00+00:00[UTC]
+        //|
         //| 	What's the buzz?
         //|
         assert_program(
@@ -423,10 +616,16 @@ mod tests {
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(
-                    Token::ToDoContent,
-                    "Hello, FromDo! due 2026-04-08T08:00:00+00:00[UTC]"
-                ),
+                t!(Token::ToDoContent, "Hello, FromDo!"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "due"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "2026-04-08T08:00:00+00:00[UTC]"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoIndent, "\t"),
                 t!(Token::ToDoContent, "What's the buzz?"),
@@ -434,10 +633,16 @@ mod tests {
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(
-                    Token::ToDoContent,
-                    "Hello, FromDo! due 2026-04-01T08:00:00+00:00[UTC]"
-                ),
+                t!(Token::ToDoContent, "Hello, FromDo!"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "due"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "2026-04-01T08:00:00+00:00[UTC]"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoIndent, "\t"),
                 t!(Token::ToDoContent, "What's the buzz?"),
@@ -458,24 +663,30 @@ mod tests {
                             node: "Hello, FromDo!".to_string(),
                             span: Span { lo: 78, hi: 92 },
                         },
-                        body: None,
-                        due: Some(ts("2026-04-08T08:00:00+00:00[UTC]")),
-                        out: Some(SString {
+                        body: Some(SString {
                             node: "What's the buzz?\n".to_string(),
-                            span: Span { lo: 129, hi: 146 },
+                            span: Span { lo: 134, hi: 151 },
                         }),
+                        due: Some(property::Due {
+                            rel: None,
+                            ts: Some(ts("2026-04-08T08:00:00+00:00[UTC]")),
+                        }),
+                        late_due: None,
                     }),
                     Block::ToDo(ToDo {
                         head: SString {
                             node: "Hello, FromDo!".to_string(),
-                            span: Span { lo: 149, hi: 163 },
+                            span: Span { lo: 154, hi: 168 },
                         },
-                        body: None,
-                        due: Some(ts("2026-04-01T08:00:00+00:00[UTC]")),
-                        out: Some(SString {
+                        body: Some(SString {
                             node: "What's the buzz?\n".to_string(),
-                            span: Span { lo: 200, hi: 217 },
+                            span: Span { lo: 210, hi: 227 },
                         }),
+                        due: Some(property::Due {
+                            rel: None,
+                            ts: Some(ts("2026-04-01T08:00:00+00:00[UTC]")),
+                        }),
+                        late_due: None,
                     }),
                 ],
             },
@@ -739,7 +950,7 @@ mod tests {
                     },
                     body: None,
                     due: None,
-                    out: None,
+                    late_due: None,
                 })],
             },
         );
@@ -782,8 +993,8 @@ mod tests {
     }
 
     #[test]
-    fn todo_error_no_head_line() {
-        //| -	FromDo
+    fn todo_no_head_line() {
+        //| -	FromDo<EOF>
         assert_program(
             vec![
                 t!(Token::ToDoHead, "-"),
@@ -792,9 +1003,14 @@ mod tests {
                 t!(Token::EOF, ""),
             ],
             Program {
-                blocks: vec![Block::Error(Error::UnexpectedToken {
-                    unexpected: Token::EOF(SString::new("", 8, 8)),
-                    expected: Parser::LINE_EXPECTED,
+                blocks: vec![Block::ToDo(ToDo {
+                    head: SString {
+                        node: "FromDo".to_string(),
+                        span: Span { lo: 2, hi: 8 },
+                    },
+                    body: None,
+                    due: None,
+                    late_due: None,
                 })],
             },
         );
@@ -829,7 +1045,7 @@ mod tests {
                         span: Span { lo: 12, hi: 29 },
                     }),
                     due: None,
-                    out: None,
+                    late_due: None,
                 })],
             },
         );
@@ -877,7 +1093,60 @@ mod tests {
                         span: Span { lo: 12, hi: 83 },
                     }),
                     due: None,
-                    out: None,
+                    late_due: None,
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_body_4() {
+        //| -	FromDo
+        //|
+        //| 	What's the buzz?
+        //| 	Tell me what's happening!
+        //| 	What's the buzz?
+        //| 	Tell me what's happening!
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "FromDo"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "What's the buzz?"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "Tell me what's happening!"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "What's the buzz?"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "Tell me what's happening!"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    head: SString {
+                        node: "FromDo".to_string(),
+                        span: Span { lo: 2, hi: 8 },
+                    },
+                    body: Some(SString {
+                        node: indoc! {"
+                            What's the buzz?
+                            Tell me what's happening!
+                            What's the buzz?
+                            Tell me what's happening!
+                        "}
+                        .to_string(),
+                        span: Span { lo: 12, hi: 101 },
+                    }),
+                    due: None,
+                    late_due: None,
                 })],
             },
         );
@@ -920,9 +1189,11 @@ mod tests {
                 t!(Token::EOF, ""),
             ],
             Program {
-                blocks: vec![Block::Error(Error::UnexpectedToken {
-                    unexpected: Token::EOF(SString::new("", 26, 26)),
-                    expected: Parser::LINE_EXPECTED,
+                blocks: vec![Block::Error(Error::UnknownToDoProp {
+                    property: SString {
+                        node: "What's the buzz?".to_string(),
+                        span: Span { lo: 10, hi: 26 },
+                    },
                 })],
             },
         );
@@ -954,10 +1225,10 @@ mod tests {
     }
 
     #[test]
-    fn todo_error_no_body_line() {
+    fn todo_no_body_line() {
         //| -	FromDo
         //|
-        //| 	What's the buzz?
+        //| 	What's the buzz?<EOF>
         assert_program(
             vec![
                 t!(Token::ToDoHead, "-"),
@@ -971,9 +1242,17 @@ mod tests {
                 t!(Token::EOF, ""),
             ],
             Program {
-                blocks: vec![Block::Error(Error::UnexpectedToken {
-                    unexpected: Token::EOF(SString::new("", 28, 28)),
-                    expected: Parser::LINE_EXPECTED,
+                blocks: vec![Block::ToDo(ToDo {
+                    head: SString {
+                        node: "FromDo".to_string(),
+                        span: Span { lo: 2, hi: 8 },
+                    },
+                    body: Some(SString {
+                        node: "What's the buzz?".to_string(),
+                        span: Span { lo: 12, hi: 28 },
+                    }),
+                    due: None,
+                    late_due: None,
                 })],
             },
         );
@@ -981,15 +1260,21 @@ mod tests {
 
     #[test]
     fn todo_due() {
-        //| -	What's the Buzz due 0001-01-01T00:00:00+00:00[UTC]
+        //| -	What's the Buzz
+        //| 	due
+        //| 		0001-01-01T00:00:00+00:00[UTC]
         assert_program(
             vec![
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(
-                    Token::ToDoContent,
-                    "What's the Buzz due 0001-01-01T00:00:00+00:00[UTC]"
-                ),
+                t!(Token::ToDoContent, "What's the Buzz"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "due"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "0001-01-01T00:00:00+00:00[UTC]"),
                 t!(Token::Line, "\n"),
                 t!(Token::EOF, ""),
             ],
@@ -1000,24 +1285,33 @@ mod tests {
                         span: Span { lo: 2, hi: 17 },
                     },
                     body: None,
-                    due: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
-                    out: None,
+                    due: Some(property::Due {
+                        rel: None,
+                        ts: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
+                    }),
+                    late_due: None,
                 })],
             },
         );
     }
 
     #[test]
-    fn todo_due_error() {
-        //| -	What's the Buzz due 0000-00-00T00:00:00Z
+    fn todo_due_error_invalid_ts() {
+        //| -	What's the Buzz
+        //| 	due
+        //| 		0000-00-00T00:00:00Z
         assert_program(
             vec![
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(
-                    Token::ToDoContent,
-                    "What's the Buzz due 0000-00-00T00:00:00Z"
-                ),
+                t!(Token::ToDoContent, "What's the Buzz"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "due"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "0000-00-00T00:00:00Z"),
                 t!(Token::Line, "\n"),
                 t!(Token::EOF, ""),
             ],
@@ -1025,7 +1319,7 @@ mod tests {
                 blocks: vec![Block::Error(Error::TimestampParseError {
                     timestamp: SString {
                         node: "0000-00-00T00:00:00Z".to_string(),
-                        span: Span { lo: 22, hi: 42 },
+                        span: Span { lo: 25, hi: 45 },
                     },
                     message: "failed to parse month in date: failed to parse two digit integer as month: parameter 'month' is not in the required range of 1..=12".to_string(),
                 })],
@@ -1034,44 +1328,78 @@ mod tests {
     }
 
     #[test]
-    fn todo_out_1() {
-        //| -	FromDo
-        //| 	What's the buzz?
+    fn todo_due_rel() {
+        //| -	What's the Buzz
+        //| 	due tomorrow
         assert_program(
             vec![
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "FromDo"),
+                t!(Token::ToDoContent, "What's the Buzz"),
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "What's the buzz?"),
+                t!(Token::ToDoContent, "due tomorrow"),
                 t!(Token::Line, "\n"),
                 t!(Token::EOF, ""),
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
                     head: SString {
-                        node: "FromDo".to_string(),
-                        span: Span { lo: 2, hi: 8 },
+                        node: "What's the Buzz".to_string(),
+                        span: Span { lo: 2, hi: 17 },
                     },
                     body: None,
-                    due: None,
-                    out: Some(SString {
-                        node: "What's the buzz?\n".to_string(),
-                        span: Span { lo: 10, hi: 27 },
+                    due: Some(property::Due {
+                        rel: Some(from_do_cur::cur::strpcur("tomorrow").unwrap()),
+                        ts: None,
                     }),
+                    late_due: None,
                 })],
             },
-        )
+        );
     }
 
     #[test]
-    fn todo_out_4() {
+    fn todo_late_due() {
+        //| -	What's the Buzz
+        //| 	late due
+        //| 		0001-01-01T00:00:00+00:00[UTC]
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "What's the Buzz"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "late due"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "0001-01-01T00:00:00+00:00[UTC]"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    head: SString {
+                        node: "What's the Buzz".to_string(),
+                        span: Span { lo: 2, hi: 17 },
+                    },
+                    body: None,
+                    due: None,
+                    late_due: Some(property::Due {
+                        rel: None,
+                        ts: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
+                    }),
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_unknown_prop() {
         //| -	FromDo
         //| 	What's the buzz?
-        //| 	Tell me what's happening!
-        //| 	What's the buzz?
-        //| 	Tell me what's happening!
         assert_program(
             vec![
                 t!(Token::ToDoHead, "-"),
@@ -1081,43 +1409,25 @@ mod tests {
                 t!(Token::ToDoIndent, "\t"),
                 t!(Token::ToDoContent, "What's the buzz?"),
                 t!(Token::Line, "\n"),
-                t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "Tell me what's happening!"),
-                t!(Token::Line, "\n"),
-                t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "What's the buzz?"),
-                t!(Token::Line, "\n"),
-                t!(Token::ToDoIndent, "\t"),
-                t!(Token::ToDoContent, "Tell me what's happening!"),
-                t!(Token::Line, "\n"),
                 t!(Token::EOF, ""),
             ],
             Program {
-                blocks: vec![Block::ToDo(ToDo {
-                    head: SString {
-                        node: "FromDo".to_string(),
-                        span: Span { lo: 2, hi: 8 },
+                blocks: vec![Block::Error(Error::UnknownToDoProp {
+                    property: SString {
+                        node: "What's the buzz?".to_string(),
+                        span: Span { lo: 10, hi: 26 },
                     },
-                    body: None,
-                    due: None,
-                    out: Some(SString {
-                        node: indoc! {"
-                            What's the buzz?
-                            Tell me what's happening!
-                            What's the buzz?
-                            Tell me what's happening!
-                        "}
-                        .to_string(),
-                        span: Span { lo: 10, hi: 99 },
-                    }),
                 })],
             },
-        )
+        );
     }
 
     #[test]
     fn todo_1() {
-        //| -	What's the Buzz due 0001-01-01T00:00:00+00:00[UTC]
+        //| -	What's the Buzz
+        //| 	due
+        //| 		0001-01-01T00:00:00+00:00[UTC]
+        //|
         //| 	What's the buzz? Tell me what's happening
         //|
         //| 	What's the buzz? Tell me what's happening
@@ -1125,10 +1435,16 @@ mod tests {
             vec![
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(
-                    Token::ToDoContent,
-                    "What's the Buzz due 0001-01-01T00:00:00+00:00[UTC]"
-                ),
+                t!(Token::ToDoContent, "What's the Buzz"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "due"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "0001-01-01T00:00:00+00:00[UTC]"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoIndent, "\t"),
                 t!(
@@ -1155,18 +1471,17 @@ mod tests {
                     body: Some(SString {
                         node: indoc! {"
                             What's the buzz? Tell me what's happening
-                        "}
-                        .to_string(),
-                        span: Span { lo: 99, hi: 141 },
-                    }),
-                    due: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
-                    out: Some(SString {
-                        node: indoc! {"
+
                             What's the buzz? Tell me what's happening
                         "}
                         .to_string(),
-                        span: Span { lo: 54, hi: 96 },
+                        span: Span { lo: 59, hi: 146 },
                     }),
+                    due: Some(property::Due {
+                        rel: None,
+                        ts: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
+                    }),
+                    late_due: None,
                 })],
             },
         );
@@ -1174,7 +1489,10 @@ mod tests {
 
     #[test]
     fn todo_2() {
-        //| -	What's the Buzz due 0001-01-01T00:00:00+00:00[UTC]
+        //| -	What's the Buzz
+        //| 	due
+        //| 		0001-01-01T00:00:00+00:00[UTC]
+        //|
         //| 	What's the buzz? Tell me what's happening
         //| 	What's the buzz? Tell me what's happening
         //| 	What's the buzz? Tell me what's happening
@@ -1196,10 +1514,16 @@ mod tests {
             vec![
                 t!(Token::ToDoHead, "-"),
                 t!(Token::ToDoIndent, "\t"),
-                t!(
-                    Token::ToDoContent,
-                    "What's the Buzz due 0001-01-01T00:00:00+00:00[UTC]"
-                ),
+                t!(Token::ToDoContent, "What's the Buzz"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "due"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "0001-01-01T00:00:00+00:00[UTC]"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
                 t!(Token::Line, "\n"),
                 t!(Token::ToDoIndent, "\t"),
                 t!(
@@ -1277,35 +1601,34 @@ mod tests {
                     },
                     body: Some(SString {
                         node: indoc! {"
+                            What's the buzz? Tell me what's happening
+                            What's the buzz? Tell me what's happening
+                            What's the buzz? Tell me what's happening
+
                             Why should you want to know?
                             Don't you mind about the future
                             Don't you try to think ahead
                             Save tomorrow for tomorrow
                             Think about today instead
-                            
+
                             When do we ride into Jerusalem?
                             When do we ride into Jerusalem?
                             When do we ride into Jerusalem?
-                            
+
                             Let me try to cool down your face a bit
                             Let me try to cool down your face a bit
                             Let me try to cool down your face a bit
                         "}
                         .to_string(),
-                        span: Span { lo: 185, hi: 558 },
+                        span: Span { lo: 59, hi: 563 },
                     }),
-                    due: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
-                    out: Some(SString {
-                        node: indoc! {"
-                            What's the buzz? Tell me what's happening
-                            What's the buzz? Tell me what's happening
-                            What's the buzz? Tell me what's happening
-                        "}
-                        .to_string(),
-                        span: Span { lo: 54, hi: 182 },
+                    due: Some(property::Due {
+                        rel: None,
+                        ts: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
                     }),
+                    late_due: None,
                 })],
             },
-        )
+        );
     }
 }

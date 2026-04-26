@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 jiff = "0.2.23"
 regex = "1.12.3"
+from-do-cur = { path = "../from-do-cur" }
 
 [dev-dependencies]
 indoc = "2.0.6"
