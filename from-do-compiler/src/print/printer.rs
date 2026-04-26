@@ -34,7 +34,12 @@ impl Printer {
                     }
                 },
                 Block::ToDo(todo) => {
-                    self.buffer.push_str(&format!("-\t{}\n", todo.head.node));
+                    let head_marker = match todo.t {
+                        ToDoType::ToDo => "-",
+                        ToDoType::NotToDo => "+",
+                    };
+                    self.buffer
+                        .push_str(&format!("{}\t{}\n", head_marker, todo.head.node));
                     if let Some(due) = &todo.due {
                         let rel_str = if let Some(rel) = &due.rel {
                             &strfcur(rel)
@@ -126,6 +131,7 @@ mod tests {
                         now: ts("2026-04-08T08:00:00+00:00[UTC]"),
                     })),
                     Block::ToDo(ToDo {
+                        t: ToDoType::ToDo,
                         head: s("FromDo"),
                         body: None,
                         due: None,
@@ -179,6 +185,7 @@ mod tests {
                         now: ts("2026-04-01T08:00:00+00:00[UTC]"),
                     })),
                     Block::ToDo(ToDo {
+                        t: ToDoType::ToDo,
                         head: s("Hello, FromDo!"),
                         body: Some(s(indoc! {"
                             What's the buzz?
@@ -198,6 +205,7 @@ mod tests {
                         }),
                     }),
                     Block::ToDo(ToDo {
+                        t: ToDoType::ToDo,
                         head: s("FromDo"),
                         body: Some(s(indoc! {"
                             Let me try to cool down your face a bit
@@ -255,6 +263,7 @@ mod tests {
                     })),
                     Block::Error(Error::LexerError(s("What's the buzz?"))),
                     Block::ToDo(ToDo {
+                        t: ToDoType::ToDo,
                         head: s("FromDo"),
                         body: None,
                         due: None,
@@ -310,6 +319,7 @@ mod tests {
         assert_print(
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: s("FromDo"),
                     body: None,
                     due: None,
@@ -325,6 +335,27 @@ mod tests {
     }
 
     #[test]
+    fn todo_simple_not() {
+        //| +	FromDo
+        assert_print(
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::NotToDo,
+                    head: s("FromDo"),
+                    body: None,
+                    due: None,
+                    late_due: None,
+                })],
+            },
+            indoc! {"
+                +	FromDo
+                	
+                
+            "},
+        );
+    }
+
+    #[test]
     fn todo_due() {
         //| -	Hello, FromDo!
         //| 	due
@@ -332,6 +363,7 @@ mod tests {
         assert_print(
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: s("Hello, FromDo!"),
                     body: None,
                     due: Some(property::Due {
@@ -361,6 +393,7 @@ mod tests {
         assert_print(
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: s("FromDo"),
                     body: Some(s(indoc! {"
                         Why should you want to know?
@@ -396,6 +429,7 @@ mod tests {
         assert_print(
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: s("Hello, FromDo!"),
                     body: Some(s(indoc! {"
                         What's the buzz?

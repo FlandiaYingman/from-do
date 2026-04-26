@@ -16,7 +16,7 @@ pub enum BlockToken {
     Separation(SString),
     /// A line beginning with ':'.
     Directive(SString),
-    /// A line beginning with '-\t'.
+    /// A line beginning with '-\t' or '+\t'.
     ToDoHeader(SString),
     /// A line beginning with '\t'.
     ToDoContinuation(SString),
@@ -50,7 +50,7 @@ mod re {
     pub static ERROR: LL<Regex> = LL::new(|| Regex::new(r"^[^\n]+").unwrap());
     pub static SEPARATION: LL<Regex> = LL::new(|| Regex::new(r"^\n+").unwrap());
     pub static DIRECTIVE: LL<Regex> = LL::new(|| Regex::new(r"^:[^\n]*").unwrap());
-    pub static TODO_HEADER: LL<Regex> = LL::new(|| Regex::new(r"^-\t[^\n]*").unwrap());
+    pub static TODO_HEADER: LL<Regex> = LL::new(|| Regex::new(r"^[-+]\t[^\n]*").unwrap());
     pub static TODO_CONTINUATION: LL<Regex> = LL::new(|| Regex::new(r"^\t[^\n]*").unwrap());
 }
 
@@ -130,7 +130,7 @@ impl<'a> Iterator for BlockLexer<'a> {
                     self.error()
                 }
             }
-            "-" => {
+            "-" | "+" => {
                 if let Some(s) = self.next_match(&re::TODO_HEADER) {
                     BlockToken::ToDoHeader(s)
                 } else {
@@ -239,6 +239,19 @@ mod tests {
             vec![
                 BlockToken::ToDoHeader(SString::new("-\t", 0, 2)),
                 BlockToken::EOF(SString::new(String::new(), 2, 2)),
+            ],
+        );
+    }
+
+    #[test]
+    fn todo_header_not() {
+        //| +	FromDo
+        assert_vec_block_token(
+            "+\tFromDo\n",
+            vec![
+                BlockToken::ToDoHeader(SString::new("+\tFromDo", 0, 8)),
+                BlockToken::Separation(SString::new("\n", 8, 9)),
+                BlockToken::EOF(SString::new(String::new(), 9, 9)),
             ],
         );
     }

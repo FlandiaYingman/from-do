@@ -179,6 +179,7 @@ mod tests {
                     now: ts("2026-04-08T08:00:00+00:00[UTC]"),
                 })),
                 Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: SString {
                         span: Span { lo: 1, hi: 15 },
                         node: "Hello, FromDo!".to_string(),
@@ -204,6 +205,7 @@ mod tests {
                         now: ts("2026-04-08T08:00:00+00:00[UTC]"),
                     })),
                     Block::ToDo(ToDo {
+                        t: ToDoType::ToDo,
                         head: SString {
                             span: Span { lo: 1, hi: 15 },
                             node: "Hello, FromDo!".to_string(),
@@ -238,6 +240,7 @@ mod tests {
                         now: ts("2026-04-08T08:00:00+00:00[UTC]"),
                     })),
                     Block::ToDo(ToDo {
+                        t: ToDoType::ToDo,
                         head: SString {
                             span: Span { lo: 1, hi: 15 },
                             node: "Hello, FromDo!".to_string(),
@@ -260,6 +263,7 @@ mod tests {
                         now: ts("2026-04-08T08:00:00+00:00[UTC]"),
                     })),
                     Block::ToDo(ToDo {
+                        t: ToDoType::ToDo,
                         head: SString {
                             span: Span { lo: 1, hi: 15 },
                             node: "Hello, FromDo!".to_string(),
@@ -285,6 +289,7 @@ mod tests {
             blocks: vec![
                 Block::Directive(Directive::Now(directive::Now { now: ts(now) })),
                 Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: SString {
                         span: Span { lo: 1, hi: 15 },
                         node: "Hello, FromDo!".to_string(),
@@ -305,6 +310,7 @@ mod tests {
                 blocks: vec![
                     Block::Directive(Directive::Now(directive::Now { now: ts(now) })),
                     Block::ToDo(ToDo {
+                        t: ToDoType::ToDo,
                         head: SString {
                             span: Span { lo: 1, hi: 15 },
                             node: "Hello, FromDo!".to_string(),
@@ -333,6 +339,7 @@ mod tests {
             blocks: vec![
                 Block::Directive(Directive::Now(directive::Now { now: ts(now) })),
                 Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: SString {
                         span: Span { lo: 1, hi: 15 },
                         node: "Hello, FromDo!".to_string(),
@@ -352,6 +359,7 @@ mod tests {
                 blocks: vec![
                     Block::Directive(Directive::Now(directive::Now { now: ts(now) })),
                     Block::ToDo(ToDo {
+                        t: ToDoType::ToDo,
                         head: SString {
                             span: Span { lo: 1, hi: 15 },
                             node: "Hello, FromDo!".to_string(),
@@ -370,6 +378,7 @@ mod tests {
         //| -	FromDo
         let input = Program {
             blocks: vec![Block::ToDo(ToDo {
+                t: ToDoType::ToDo,
                 head: SString {
                     span: Span { lo: 1, hi: 7 },
                     node: "FromDo".to_string(),

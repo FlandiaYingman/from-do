@@ -108,7 +108,7 @@ mod re {
     pub static DIRECTIVE_HEAD: LL<Regex> = LL::new(|| Regex::new(r"^:").unwrap());
     pub static DIRECTIVE_ARG: LL<Regex> = LL::new(|| Regex::new(r"^\S+").unwrap());
 
-    pub static TODO_HEAD: LL<Regex> = LL::new(|| Regex::new(r"^-").unwrap());
+    pub static TODO_HEAD: LL<Regex> = LL::new(|| Regex::new(r"^[-+]").unwrap());
     pub static TODO_INDENT: LL<Regex> = LL::new(|| Regex::new(r"^\t").unwrap());
     pub static TODO_CONTENT: LL<Regex> = LL::new(|| Regex::new(r"^[^\n]+").unwrap());
 }
@@ -442,6 +442,19 @@ mod tests {
             vec![
                 Token::ToDoHead(SString::new("-", 0, 1)),
                 Token::ToDoIndent(SString::new("\t", 1, 2)),
+            ],
+        );
+    }
+
+    #[test]
+    fn todo_header_not() {
+        //| +	FromDo
+        assert_vec_token(
+            vec![bt!(BlockToken::ToDoHeader, "+\tFromDo")],
+            vec![
+                Token::ToDoHead(SString::new("+", 0, 1)),
+                Token::ToDoIndent(SString::new("\t", 1, 2)),
+                Token::ToDoContent(SString::new("FromDo", 2, 8)),
             ],
         );
     }

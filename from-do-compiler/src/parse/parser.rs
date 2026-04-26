@@ -143,7 +143,14 @@ impl Parser {
                 expected: Self::BLOCK_EXPECTED,
             }),
 
-            Token::ToDoHead(_) => self.todo().map_or_else(Block::Error, Block::ToDo),
+            Token::ToDoHead(s) => {
+                let t = match s.node.as_str() {
+                    "-" => ToDoType::ToDo,
+                    "+" => ToDoType::NotToDo,
+                    _ => panic!("unreachable: ToDoHead should be '-' or '+'"),
+                };
+                self.todo(t).map_or_else(Block::Error, Block::ToDo)
+            }
             token @ Token::ToDoIndent(_) => Block::Error(UnexpectedToken {
                 unexpected: token,
                 expected: Self::BLOCK_EXPECTED,
@@ -223,7 +230,7 @@ impl Parser {
         }
     }
 
-    fn todo(&mut self) -> Result<ToDo> {
+    fn todo(&mut self, t: ToDoType) -> Result<ToDo> {
         let _ = self.todo_indent()?;
         let head = self.todo_content()?;
         let _ = self.line_or_eof()?;
@@ -266,6 +273,7 @@ impl Parser {
         };
 
         Ok(ToDo {
+            t,
             head,
             body,
             due,
@@ -513,6 +521,7 @@ mod tests {
                         now: ts("2026-04-08T08:00:00+00:00[UTC]"),
                     })),
                     Block::ToDo(ToDo {
+                        t: ToDoType::ToDo,
                         head: SString {
                             node: "Hello, FromDo!".to_string(),
                             span: Span { lo: 39, hi: 53 },
@@ -560,6 +569,7 @@ mod tests {
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: SString {
                         node: "Hello, FromDo!".to_string(),
                         span: Span { lo: 2, hi: 16 },
@@ -659,6 +669,7 @@ mod tests {
                         now: ts("2026-04-01T08:00:00+00:00[UTC]"),
                     })),
                     Block::ToDo(ToDo {
+                        t: ToDoType::ToDo,
                         head: SString {
                             node: "Hello, FromDo!".to_string(),
                             span: Span { lo: 78, hi: 92 },
@@ -674,6 +685,7 @@ mod tests {
                         late_due: None,
                     }),
                     Block::ToDo(ToDo {
+                        t: ToDoType::ToDo,
                         head: SString {
                             node: "Hello, FromDo!".to_string(),
                             span: Span { lo: 154, hi: 168 },
@@ -944,6 +956,33 @@ mod tests {
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
+                    head: SString {
+                        node: "FromDo".to_string(),
+                        span: Span { lo: 2, hi: 8 },
+                    },
+                    body: None,
+                    due: None,
+                    late_due: None,
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_simple_not() {
+        //| +	FromDo
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "+"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "FromDo"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::NotToDo,
                     head: SString {
                         node: "FromDo".to_string(),
                         span: Span { lo: 2, hi: 8 },
@@ -1004,6 +1043,7 @@ mod tests {
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: SString {
                         node: "FromDo".to_string(),
                         span: Span { lo: 2, hi: 8 },
@@ -1036,6 +1076,7 @@ mod tests {
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: SString {
                         node: "FromDo".to_string(),
                         span: Span { lo: 2, hi: 8 },
@@ -1079,6 +1120,7 @@ mod tests {
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: SString {
                         node: "FromDo".to_string(),
                         span: Span { lo: 2, hi: 8 },
@@ -1131,6 +1173,7 @@ mod tests {
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: SString {
                         node: "FromDo".to_string(),
                         span: Span { lo: 2, hi: 8 },
@@ -1243,6 +1286,7 @@ mod tests {
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: SString {
                         node: "FromDo".to_string(),
                         span: Span { lo: 2, hi: 8 },
@@ -1280,6 +1324,7 @@ mod tests {
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: SString {
                         node: "What's the Buzz".to_string(),
                         span: Span { lo: 2, hi: 17 },
@@ -1344,6 +1389,7 @@ mod tests {
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: SString {
                         node: "What's the Buzz".to_string(),
                         span: Span { lo: 2, hi: 17 },
@@ -1381,6 +1427,7 @@ mod tests {
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: SString {
                         node: "What's the Buzz".to_string(),
                         span: Span { lo: 2, hi: 17 },
@@ -1464,6 +1511,7 @@ mod tests {
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: SString {
                         node: "What's the Buzz".to_string(),
                         span: Span { lo: 2, hi: 17 },
@@ -1595,6 +1643,7 @@ mod tests {
             ],
             Program {
                 blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
                     head: SString {
                         node: "What's the Buzz".to_string(),
                         span: Span { lo: 2, hi: 17 },

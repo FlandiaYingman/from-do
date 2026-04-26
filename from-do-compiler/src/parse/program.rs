@@ -70,11 +70,21 @@ pub mod directive {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ToDo {
+    pub t: ToDoType,
+
     pub head: SString,
     pub body: Option<SString>,
 
     pub due: Option<property::Due>,
     pub late_due: Option<property::Due>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToDoType {
+    /// A task that is yet to be done (the "-" prefixed tasks).
+    ToDo,
+    /// A task that is already done (the "+" prefixed tasks).
+    NotToDo,
 }
 
 pub mod property {
