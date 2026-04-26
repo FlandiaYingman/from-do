@@ -1,0 +1,52 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "from-do",
+  "scopeName": "source.fromdo",
+  "patterns": [
+    { "include": "#directive" },
+    { "include": "#todo-head" },
+    { "include": "#todo-property" },
+    { "include": "#todo-timestamp" },
+    { "include": "#todo-body" }
+  ],
+  "repository": {
+    "directive": {
+      "match": "^(:)(\\S+)(?:\\s+(.*))?$",
+      "captures": {
+        "1": { "name": "punctuation.definition.directive.fromdo" },
+        "2": { "name": "keyword.control.directive.fromdo" },
+        "3": { "name": "string.unquoted.directive-arg.fromdo" }
+      }
+    },
+    "todo-head": {
+      "match": "^([-+])(\\t)(.*)$",
+      "captures": {
+        "1": { "name": "keyword.operator.todo.fromdo" },
+        "2": { "name": "punctuation.whitespace.indent.fromdo" },
+        "3": { "name": "entity.name.section.todo-head.fromdo" }
+      }
+    },
+    "todo-property": {
+      "match": "^(\\t)(late due|due)(?:\\s+(.*))?$",
+      "captures": {
+        "1": { "name": "punctuation.whitespace.indent.fromdo" },
+        "2": { "name": "keyword.other.property.fromdo" },
+        "3": { "name": "string.unquoted.cur.fromdo" }
+      }
+    },
+    "todo-timestamp": {
+      "match": "^(\\t\\t)(.+)$",
+      "captures": {
+        "1": { "name": "punctuation.whitespace.indent.fromdo" },
+        "2": { "name": "constant.other.timestamp.fromdo" }
+      }
+    },
+    "todo-body": {
+      "match": "^(\\t)(.*)$",
+      "captures": {
+        "1": { "name": "punctuation.whitespace.indent.fromdo" },
+        "2": { "name": "string.unquoted.todo-body.fromdo" }
+      }
+    }
+  }
+}

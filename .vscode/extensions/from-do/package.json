@@ -1,0 +1,43 @@
+{
+    "name": "from-do-language",
+    "displayName": "From Do Language",
+    "description": "The VS Code extension for the From Do language.",
+    "version": "0.0.1",
+    "publisher": "local",
+    "engines": {
+        "vscode": "^1.60.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "contributes": {
+        "languages": [
+            {
+                "id": "fromdo",
+                "aliases": [
+                    "from-do",
+                    "fromdo"
+                ],
+                "extensions": [
+                    ".fromdo"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "fromdo",
+                "scopeName": "source.fromdo",
+                "path": "./syntaxes/fromdo.tmLanguage.json"
+            }
+        ],
+        "configurationDefaults": {
+            "[fromdo]": {
+                "editor.trimAutoWhitespace": false,
+                "editor.detectIndentation": false,
+                "editor.insertSpaces": false,
+                "editor.tabSize": 4
+            }
+        }
+    }
+}
