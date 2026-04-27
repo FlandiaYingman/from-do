@@ -55,7 +55,7 @@
 	Of course, the future work include:
 	
 	- Support more properties, such as "recurring" and "priority".
-	- Support task layouts, i.e., sectioning tasks.
+	- Support task layouts, i.e., sections, subsections, etc.
 	- Support scheduling the tasks.
 	- Create a LSP for From Do.
 	

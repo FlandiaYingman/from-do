@@ -28,7 +28,7 @@ if the automatic re-compilation isn't favored.
 
 The repo also comes with a local VS Code extension (under `.vscode/extensions/from-do`) for From Do language, providing syntax highlighting and other convenient settings. It should be automatically picked up by VS Code if the folder is trusted, or, if not, go to the Extensions view -> Recommended, and you'll see the From Do Langauge extension as a workspace extension.
 
-Then, open `example.fromdo`, which is an example file in From Do language. Check it out, and save it (even without changeing anything!) to see how the "interactive" part of the compiler works.
+Then, open `example.fromdo`, which is a self-explanatory example file in From Do language. Check it out, and save it (even without changeing anything!) to see how the "interactive" part of the compiler works.
 
 ## Syntax & Semantics
 
@@ -42,6 +42,24 @@ The compiler is organized into a bunch of crates.
 - `from-do-cur` is a crate for parsing and formatting date and time strings, and also for parsing and formatting recurring patterns. It is used by the main compiler.
 - `from-do-cli` is a crate for the command-line interface (CLI) of the compiler. It provides the "watch" command, which watches the From-Do file changes and re-compiles the compiler whenever the Rust source file changed.
 - Other crates are placeholders :^)
+
+The current modules are listed as follows:
+
+- **Block Lexer and (Token) Lexer.** A two-stage hand-written lexer in `from-do-compiler::lex`. The block lexer cuts the source into directive / to-do / separation blocks; the (token) lexer then refines each block into tokens (`DirectiveHead`, `ToDoHead`, `ToDoIndent`, `ToDoContent`, ...). Every token carries a `Span` representing a range in the source for error reporting.
+- **Parser.** A recursive descent parser in `from-do-compiler::parse` consumes the token stream and produces a `Program` AST of `Block`s (`Directive`, `ToDo`, or `Error`). Errors are modelled as values, not panics -- a malformed block becomes a `Block::Error` so the rest of the file still parses.
+- **Evaluator.** `from-do-compiler::eval` resolves relative dates ("today", "tomorrow", "next Monday", "in 3 days") against the current time (or against a `:now` directive, useful for demos and tests) and produces a new program.
+- **Printer.** `from-do-compiler::print` pretty-prints the (possibly-evaluated) AST back to canonical From-Do source, so saving a file in the watcher round-trips it through `lex -> parse-> eval-> print`.
+- **`cur` sub-grammar** (`from-do-cur::cur`): a self-contained parser/formatter for absolute and relative date-time phrases ("today", "tomorrow at 17:15", ...) with a property-based round-trip test suite (`test_roundtrip.rs`).
+- **`recur` sub-grammar** (`from-do-cur::recur`): a self-contained parser/formatter for recurring patterns ("every Monday", "every 2 weeks", ...), including a `next()` operator that computes the next occurrence after a given instant. It's not yet wired into the main compiler.
+- **Watch CLI** (`from-do-cli watch`): uses `notify-debouncer-mini` for file events and a `tokio` multi-thread runtime to compile changed `.fromdo` files concurrently.
+- **VS Code extension** (`.vscode/extensions/from-do`): TextMate grammar for syntax highlighting and editor configuration; auto-recommended for the workspace.
+
+### 3rd-party
+
+- [`jiff`](https://docs.rs/jiff). the time library powering the `cur`/`recur` modules.
+- [`notify`](https://docs.rs/notify) + [`notify-debouncer-mini`](https://docs.rs/notify-debouncer-mini). cross-platform filesystem watching plus debouncing.
+- [`tokio`](https://docs.rs/tokio). concurrent runtime.
+- [`clap`](https://docs.rs/clap). CLI argument parsing.
 
 ## To-Do, or From-Do?
 
