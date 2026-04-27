@@ -12,7 +12,7 @@ The From Do language and the compiler are in experimental stage. There are only 
 
 The prerequisite for using From Do is Rust.
 
-Clone the repo. CD to the `from-do-cli` directory, and run either
+Clone the repo. CD to the project root. Run either
 
 ```bash
 bacon
