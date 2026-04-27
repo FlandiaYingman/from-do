@@ -62,7 +62,7 @@
 	Optionally, a recurring task can have a "begin" and/or "until" property,
 	which restricts the generation to be after the "begin" date and before the
 	"until" date (inclusive). 
-
+	
 	This example generates 1 task only even if `:ahead` is 3. This is because
 	there is only one Monday between last Friday and next Friday, which is next
 	Monday.
