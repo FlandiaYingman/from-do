@@ -25,9 +25,14 @@ struct Watch {
 fn main() {
     let cli = Cli::parse();
 
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .expect("failed to build tokio runtime");
+
     match cli.command {
         Commands::Watch(args) => {
-            if let Err(e) = watch::watch(args) {
+            if let Err(e) = runtime.block_on(watch::watch(args)) {
                 eprintln!("Error: {:?}", e);
             }
         }
