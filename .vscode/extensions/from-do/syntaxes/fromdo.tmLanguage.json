@@ -5,6 +5,7 @@
   "patterns": [
     { "include": "#directive" },
     { "include": "#todo-head" },
+    { "include": "#todo-recurring" },
     { "include": "#todo-property" },
     { "include": "#todo-timestamp" },
     { "include": "#todo-body" }
@@ -27,11 +28,19 @@
       }
     },
     "todo-property": {
-      "match": "^(\\t)(late due|due)(?:\\s+(.*))?$",
+      "match": "^(\\t)(late due|due|begin|until)(?:\\s+(.*))?$",
       "captures": {
         "1": { "name": "punctuation.whitespace.indent.fromdo" },
         "2": { "name": "keyword.other.property.fromdo" },
         "3": { "name": "string.unquoted.cur.fromdo" }
+      }
+    },
+    "todo-recurring": {
+      "match": "^(\\t)(recurring)(?:\\s+(.*))?$",
+      "captures": {
+        "1": { "name": "punctuation.whitespace.indent.fromdo" },
+        "2": { "name": "keyword.other.property.fromdo" },
+        "3": { "name": "string.unquoted.recur.fromdo" }
       }
     },
     "todo-timestamp": {

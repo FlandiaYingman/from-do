@@ -15,13 +15,34 @@ pub struct Parser {
 
 type Result<T> = std::result::Result<T, Error>;
 
+/// IR of parsing a single to-do property line. The first field is the property
+/// head SString (e.g. `"due"`, `"recurring"`), kept so the caller can attribute
+/// errors to it.
+enum IRProp {
+    Due(ir_prop::Due),
+    LateDue(ir_prop::LateDue),
+    Recurring(ir_prop::Recurring),
+    Begin(ir_prop::Begin),
+    Until(ir_prop::Until),
+}
+
+mod ir_prop {
+    use super::*;
+    pub struct Due(pub SString, pub property::Due);
+    pub struct LateDue(pub SString, pub property::Due);
+    pub struct Recurring(pub SString, pub property::Recurring);
+    pub struct Begin(pub SString, pub property::Due);
+    pub struct Until(pub SString, pub property::Due);
+}
+
 mod re {
     use super::*;
 
     use regex::Regex;
     use std::sync::LazyLock as LL;
 
-    static TODO_PROP_HEAD: LL<Regex> = LL::new(|| Regex::new(r"^(due|late due) ?(.*)$").unwrap());
+    static TODO_PROP_HEAD: LL<Regex> =
+        LL::new(|| Regex::new(r"^(due|late due|recurring|begin|until) ?(.*)$").unwrap());
 
     pub fn todo_prop_head(head: &SString) -> Option<(SString, SString)> {
         TODO_PROP_HEAD
@@ -215,6 +236,12 @@ impl Parser {
                 let tz = Self::time_zone(&tz_str)?;
                 Ok(Directive::Tz(directive::Tz { tz }))
             }
+            "ahead" => {
+                let _ = self.space()?;
+                let ahead_str = self.directive_arg()?;
+                let ahead = Self::ahead(&ahead_str)?;
+                Ok(Directive::Ahead(directive::Ahead { ahead }))
+            }
             _ => Err(Error::UnknownDirective(name)),
         }
     }
@@ -237,16 +264,48 @@ impl Parser {
 
         let mut due = None;
         let mut late_due = None;
-        // let mut recurring = None;
+        let mut recurring = None;
+        let mut begin = None;
+        let mut until = None;
+
         while let Some(Token::ToDoIndent(_)) = self.peek() {
             let _ = self.todo_indent().unwrap();
             if let Some(Token::Line(_)) = self.peek() {
                 let _ = self.line().unwrap();
                 break;
             }
-            let (d, ld, _) = self.todo_prop()?;
-            due = d.or(due);
-            late_due = ld.or(late_due);
+            match self.todo_prop()? {
+                IRProp::Due(prop) => {
+                    if due.is_some() || recurring.is_some() {
+                        return Err(Error::UnexpectedToDoProp { property: prop.0 });
+                    }
+                    due = prop.into();
+                }
+                IRProp::LateDue(prop) => {
+                    if late_due.is_some() || recurring.is_some() {
+                        return Err(Error::UnexpectedToDoProp { property: prop.0 });
+                    }
+                    late_due = prop.into();
+                }
+                IRProp::Recurring(prop) => {
+                    if recurring.is_some() || due.is_some() || late_due.is_some() {
+                        return Err(Error::UnexpectedToDoProp { property: prop.0 });
+                    }
+                    recurring = prop.into();
+                }
+                IRProp::Begin(prop) => {
+                    if begin.is_some() || recurring.is_none() {
+                        return Err(Error::UnexpectedToDoProp { property: prop.0 });
+                    }
+                    begin = prop.into();
+                }
+                IRProp::Until(prop) => {
+                    if until.is_some() || recurring.is_none() {
+                        return Err(Error::UnexpectedToDoProp { property: prop.0 });
+                    }
+                    until = prop.into();
+                }
+            }
         }
 
         let mut body_vec = Vec::new();
@@ -272,35 +331,32 @@ impl Parser {
             Some(body_vec.into_iter().reduce(|c1, c2| c1 + c2).unwrap())
         };
 
+        let schedule = match recurring {
+            None => Schedule::Once {
+                due: due.map(|x| x.1),
+                late_due: late_due.map(|x| x.1),
+            },
+            Some(recurring) => Schedule::Recurring {
+                recurring: recurring.1,
+                begin: begin.map(|x| x.1),
+                until: until.map(|x| x.1),
+            },
+        };
+
         Ok(ToDo {
             t,
             head,
             body,
-            due,
-            late_due,
+            schedule,
         })
     }
 
-    fn todo_prop(
-        &mut self,
-    ) -> Result<(
-        Option<property::Due>,       // due
-        Option<property::Due>,       // late due
-        Option<property::Recurring>, // recurring
-    )> {
-        let mut due = None;
-        let mut late_due = None;
-        let mut recurring = None;
-
+    fn todo_prop(&mut self) -> Result<IRProp> {
         let prop_content = self.todo_content()?;
-        let (prop_head, prop_arg_head) = match re::todo_prop_head(&prop_content) {
-            Some((head, arg)) => (head, arg),
-            None => {
-                return Err(Error::UnknownToDoProp {
-                    property: prop_content,
-                });
-            }
-        };
+        let (prop_head, prop_arg_head) =
+            re::todo_prop_head(&prop_content).ok_or_else(|| Error::UnknownToDoProp {
+                property: prop_content,
+            })?;
         let _ = self.line_or_eof()?;
 
         match prop_head.node.as_str() {
@@ -309,60 +365,91 @@ impl Parser {
                 let prop_rel = (!prop_rel_str.node.is_empty())
                     .then(|| Self::cur(&prop_rel_str))
                     .transpose()?;
-
                 let prop_ts = self.todo_prop_ts()?;
-
-                due = Some(property::Due {
-                    rel: prop_rel,
-                    ts: prop_ts,
-                });
+                Ok(IRProp::Due(ir_prop::Due(
+                    prop_head,
+                    property::Due {
+                        rel: prop_rel,
+                        ts: prop_ts,
+                    },
+                )))
             }
             "late due" => {
                 let prop_rel_str = prop_arg_head;
                 let prop_rel = (!prop_rel_str.node.is_empty())
                     .then(|| Self::cur(&prop_rel_str))
                     .transpose()?;
-
                 let prop_ts = self.todo_prop_ts()?;
-
-                late_due = Some(property::Due {
-                    rel: prop_rel,
-                    ts: prop_ts,
-                });
+                Ok(IRProp::LateDue(ir_prop::LateDue(
+                    prop_head,
+                    property::Due {
+                        rel: prop_rel,
+                        ts: prop_ts,
+                    },
+                )))
             }
             "recurring" => {
                 let prop_pattern_str = prop_arg_head;
                 let prop_pattern = Self::recur(&prop_pattern_str)?;
-                let _ = self.line_or_eof()?;
-
-                recurring = Some(property::Recurring {
-                    pattern: prop_pattern,
-                });
+                let prop_ts = self.todo_prop_ts()?;
+                Ok(IRProp::Recurring(ir_prop::Recurring(
+                    prop_head,
+                    property::Recurring {
+                        pattern: prop_pattern,
+                        ts: prop_ts,
+                    },
+                )))
+            }
+            "begin" => {
+                let prop_rel_str = prop_arg_head;
+                let prop_rel = (!prop_rel_str.node.is_empty())
+                    .then(|| Self::cur(&prop_rel_str))
+                    .transpose()?;
+                let prop_ts = self.todo_prop_ts()?;
+                Ok(IRProp::Begin(ir_prop::Begin(
+                    prop_head,
+                    property::Due {
+                        rel: prop_rel,
+                        ts: prop_ts,
+                    },
+                )))
+            }
+            "until" => {
+                let prop_rel_str = prop_arg_head;
+                let prop_rel = (!prop_rel_str.node.is_empty())
+                    .then(|| Self::cur(&prop_rel_str))
+                    .transpose()?;
+                let prop_ts = self.todo_prop_ts()?;
+                Ok(IRProp::Until(ir_prop::Until(
+                    prop_head,
+                    property::Due {
+                        rel: prop_rel,
+                        ts: prop_ts,
+                    },
+                )))
             }
             _ => panic!(
-                "unreachable: re::todo_prop_head should only capture 'due', 'late due', or 'recurring'"
+                "unreachable: re::todo_prop_head should only capture 'due', 'late due', 'recurring', 'begin', or 'until'"
             ),
         }
-
-        Ok((due, late_due, recurring))
     }
 
-    /// Try to consume the optional `\t\t<timestamp>\n` line that may follow a
-    /// `due`/`late due` property head. If the next two tokens are not
-    /// `ToDoIndent`, the cursor is restored and `None` is returned.
     fn todo_prop_ts(&mut self) -> Result<Option<jiff::Zoned>> {
         let cp = self.checkpoint();
-        let first_is_indent = matches!(self.peek(), Some(Token::ToDoIndent(_)));
-        if !first_is_indent {
+
+        let indent_1 = matches!(self.peek(), Some(Token::ToDoIndent(_)));
+        if !indent_1 {
             return Ok(None);
         }
         let _ = self.todo_indent().unwrap();
-        let second_is_indent = matches!(self.peek(), Some(Token::ToDoIndent(_)));
-        if !second_is_indent {
+
+        let indent_2 = matches!(self.peek(), Some(Token::ToDoIndent(_)));
+        if !indent_2 {
             self.restore(cp);
             return Ok(None);
         }
         let _ = self.todo_indent().unwrap();
+
         let prop_ts_str = self.todo_content()?;
         let prop_ts = (!prop_ts_str.node.is_empty())
             .then(|| Self::timestamp(&prop_ts_str))
@@ -424,6 +511,16 @@ impl Parser {
             input: recur_str.clone(),
             message: err.to_string(),
         })
+    }
+
+    fn ahead(ahead_str: &SString) -> Result<u32> {
+        ahead_str
+            .node
+            .parse::<u32>()
+            .map_err(|err| Error::AheadParseError {
+                ahead: ahead_str.clone(),
+                message: err.to_string(),
+            })
     }
 }
 
@@ -527,11 +624,13 @@ mod tests {
                             span: Span { lo: 39, hi: 53 },
                         },
                         body: None,
-                        due: Some(property::Due {
-                            rel: None,
-                            ts: Some(ts("2026-04-08T08:00:00+00:00[UTC]")),
-                        }),
-                        late_due: None,
+                        schedule: Schedule::Once {
+                            due: Some(property::Due {
+                                rel: None,
+                                ts: Some(ts("2026-04-08T08:00:00+00:00[UTC]")),
+                            }),
+                            late_due: None,
+                        },
                     }),
                 ],
             },
@@ -575,14 +674,16 @@ mod tests {
                         span: Span { lo: 2, hi: 16 },
                     },
                     body: None,
-                    due: Some(property::Due {
-                        rel: None,
-                        ts: Some(ts("2026-04-08T08:00:00+00:00[UTC]")),
-                    }),
-                    late_due: Some(property::Due {
-                        rel: None,
-                        ts: Some(ts("2026-04-09T08:00:00+00:00[UTC]")),
-                    }),
+                    schedule: Schedule::Once {
+                        due: Some(property::Due {
+                            rel: None,
+                            ts: Some(ts("2026-04-08T08:00:00+00:00[UTC]")),
+                        }),
+                        late_due: Some(property::Due {
+                            rel: None,
+                            ts: Some(ts("2026-04-09T08:00:00+00:00[UTC]")),
+                        }),
+                    },
                 })],
             },
         );
@@ -678,11 +779,13 @@ mod tests {
                             node: "What's the buzz?\n".to_string(),
                             span: Span { lo: 134, hi: 151 },
                         }),
-                        due: Some(property::Due {
-                            rel: None,
-                            ts: Some(ts("2026-04-08T08:00:00+00:00[UTC]")),
-                        }),
-                        late_due: None,
+                        schedule: Schedule::Once {
+                            due: Some(property::Due {
+                                rel: None,
+                                ts: Some(ts("2026-04-08T08:00:00+00:00[UTC]")),
+                            }),
+                            late_due: None,
+                        },
                     }),
                     Block::ToDo(ToDo {
                         t: ToDoType::ToDo,
@@ -694,11 +797,13 @@ mod tests {
                             node: "What's the buzz?\n".to_string(),
                             span: Span { lo: 210, hi: 227 },
                         }),
-                        due: Some(property::Due {
-                            rel: None,
-                            ts: Some(ts("2026-04-01T08:00:00+00:00[UTC]")),
-                        }),
-                        late_due: None,
+                        schedule: Schedule::Once {
+                            due: Some(property::Due {
+                                rel: None,
+                                ts: Some(ts("2026-04-01T08:00:00+00:00[UTC]")),
+                            }),
+                            late_due: None,
+                        },
                     }),
                 ],
             },
@@ -838,6 +943,45 @@ mod tests {
     }
 
     #[test]
+    fn directive_ahead() {
+        //| :ahead 5
+        assert_program(
+            vec![
+                t!(Token::DirectiveHead, ":"),
+                t!(Token::DirectiveArg, "ahead"),
+                t!(Token::Space, " "),
+                t!(Token::DirectiveArg, "5"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::Directive(Directive::Ahead(directive::Ahead {
+                    ahead: 5,
+                }))],
+            },
+        );
+    }
+
+    #[test]
+    fn directive_ahead_error_invalid() {
+        //| :ahead FromDo
+        assert_program(
+            vec![
+                t!(Token::DirectiveHead, ":"),
+                t!(Token::DirectiveArg, "ahead"),
+                t!(Token::Space, " "),
+                t!(Token::DirectiveArg, "FromDo"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::Error(Error::AheadParseError {
+                    ahead: SString::new("FromDo", 7, 13),
+                    message: "FromDo".parse::<u32>().unwrap_err().to_string(),
+                })],
+            },
+        );
+    }
+
+    #[test]
     fn directive_error_unknown() {
         //| :unknown
         assert_program(
@@ -962,8 +1106,7 @@ mod tests {
                         span: Span { lo: 2, hi: 8 },
                     },
                     body: None,
-                    due: None,
-                    late_due: None,
+                    schedule: Schedule::never(),
                 })],
             },
         );
@@ -988,8 +1131,7 @@ mod tests {
                         span: Span { lo: 2, hi: 8 },
                     },
                     body: None,
-                    due: None,
-                    late_due: None,
+                    schedule: Schedule::never(),
                 })],
             },
         );
@@ -1049,8 +1191,7 @@ mod tests {
                         span: Span { lo: 2, hi: 8 },
                     },
                     body: None,
-                    due: None,
-                    late_due: None,
+                    schedule: Schedule::never(),
                 })],
             },
         );
@@ -1085,8 +1226,7 @@ mod tests {
                         node: "What's the buzz?\n".to_string(),
                         span: Span { lo: 12, hi: 29 },
                     }),
-                    due: None,
-                    late_due: None,
+                    schedule: Schedule::never(),
                 })],
             },
         );
@@ -1134,8 +1274,7 @@ mod tests {
                         .to_string(),
                         span: Span { lo: 12, hi: 83 },
                     }),
-                    due: None,
-                    late_due: None,
+                    schedule: Schedule::never(),
                 })],
             },
         );
@@ -1188,8 +1327,7 @@ mod tests {
                         .to_string(),
                         span: Span { lo: 12, hi: 101 },
                     }),
-                    due: None,
-                    late_due: None,
+                    schedule: Schedule::never(),
                 })],
             },
         );
@@ -1295,8 +1433,7 @@ mod tests {
                         node: "What's the buzz?".to_string(),
                         span: Span { lo: 12, hi: 28 },
                     }),
-                    due: None,
-                    late_due: None,
+                    schedule: Schedule::never(),
                 })],
             },
         );
@@ -1330,11 +1467,13 @@ mod tests {
                         span: Span { lo: 2, hi: 17 },
                     },
                     body: None,
-                    due: Some(property::Due {
-                        rel: None,
-                        ts: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
-                    }),
-                    late_due: None,
+                    schedule: Schedule::Once {
+                        due: Some(property::Due {
+                            rel: None,
+                            ts: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
+                        }),
+                        late_due: None,
+                    },
                 })],
             },
         );
@@ -1395,11 +1534,13 @@ mod tests {
                         span: Span { lo: 2, hi: 17 },
                     },
                     body: None,
-                    due: Some(property::Due {
-                        rel: Some(from_do_cur::cur::strpcur("tomorrow").unwrap()),
-                        ts: None,
-                    }),
-                    late_due: None,
+                    schedule: Schedule::Once {
+                        due: Some(property::Due {
+                            rel: Some(from_do_cur::cur::strpcur("tomorrow").unwrap()),
+                            ts: None,
+                        }),
+                        late_due: None,
+                    },
                 })],
             },
         );
@@ -1433,11 +1574,294 @@ mod tests {
                         span: Span { lo: 2, hi: 17 },
                     },
                     body: None,
-                    due: None,
-                    late_due: Some(property::Due {
-                        rel: None,
-                        ts: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
-                    }),
+                    schedule: Schedule::Once {
+                        due: None,
+                        late_due: Some(property::Due {
+                            rel: None,
+                            ts: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
+                        }),
+                    },
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_recurring() {
+        //| -	What's the Buzz
+        //| 	recurring every Mon
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "What's the Buzz"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "recurring every Mon"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
+                    head: SString {
+                        node: "What's the Buzz".to_string(),
+                        span: Span { lo: 2, hi: 17 },
+                    },
+                    body: None,
+                    schedule: Schedule::Recurring {
+                        recurring: property::Recurring {
+                            pattern: from_do_cur::recur::strprecur("every Mon").unwrap(),
+                            ts: None,
+                        },
+                        begin: None,
+                        until: None,
+                    },
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_recurring_with_ts() {
+        //| -	What's the Buzz
+        //| 	recurring every Mon
+        //| 		2026-04-13T08:00:00+00:00[UTC]
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "What's the Buzz"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "recurring every Mon"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "2026-04-13T08:00:00+00:00[UTC]"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
+                    head: SString {
+                        node: "What's the Buzz".to_string(),
+                        span: Span { lo: 2, hi: 17 },
+                    },
+                    body: None,
+                    schedule: Schedule::Recurring {
+                        recurring: property::Recurring {
+                            pattern: from_do_cur::recur::strprecur("every Mon").unwrap(),
+                            ts: Some(ts("2026-04-13T08:00:00+00:00[UTC]")),
+                        },
+                        begin: None,
+                        until: None,
+                    },
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_recurring_with_from_until() {
+        //| -	What's the Buzz
+        //| 	recurring every Mon
+        //| 	begin today
+        //| 	until next Monday
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "What's the Buzz"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "recurring every Mon"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "begin today"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "until next Monday"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
+                    head: SString {
+                        node: "What's the Buzz".to_string(),
+                        span: Span { lo: 2, hi: 17 },
+                    },
+                    body: None,
+                    schedule: Schedule::Recurring {
+                        recurring: property::Recurring {
+                            pattern: from_do_cur::recur::strprecur("every Mon").unwrap(),
+                            ts: None,
+                        },
+                        begin: Some(property::Due {
+                            rel: Some(from_do_cur::cur::strpcur("today").unwrap()),
+                            ts: None,
+                        }),
+                        until: Some(property::Due {
+                            rel: Some(from_do_cur::cur::strpcur("next Monday").unwrap()),
+                            ts: None,
+                        }),
+                    },
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_error_dup_due() {
+        //| -	FromDo
+        //| 	due tomorrow
+        //| 	due next Monday
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "FromDo"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "due tomorrow"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "due next Monday"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::Error(Error::UnexpectedToDoProp {
+                    property: SString::new("due", 24, 27),
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_error_dup_recurring() {
+        //| -	FromDo
+        //| 	recurring every Mon
+        //| 	recurring every Tue
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "FromDo"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "recurring every Mon"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "recurring every Tue"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::Error(Error::UnexpectedToDoProp {
+                    property: SString::new("recurring", 31, 40),
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_error_conflict_recurring_after_due() {
+        //| -	FromDo
+        //| 	due tomorrow
+        //| 	recurring every Mon
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "FromDo"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "due tomorrow"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "recurring every Mon"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::Error(Error::UnexpectedToDoProp {
+                    property: SString::new("recurring", 24, 33),
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_error_conflict_due_after_recurring() {
+        //| -	FromDo
+        //| 	recurring every Mon
+        //| 	due tomorrow
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "FromDo"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "recurring every Mon"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "due tomorrow"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::Error(Error::UnexpectedToDoProp {
+                    property: SString::new("due", 31, 34),
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_error_orphan_begin() {
+        //| -	FromDo
+        //| 	begin today
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "FromDo"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "begin today"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::Error(Error::UnexpectedToDoProp {
+                    property: SString::new("begin", 10, 15),
+                })],
+            },
+        );
+    }
+
+    #[test]
+    fn todo_error_orphan_until() {
+        //| -	FromDo
+        //| 	until next Monday
+        assert_program(
+            vec![
+                t!(Token::ToDoHead, "-"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "FromDo"),
+                t!(Token::Line, "\n"),
+                t!(Token::ToDoIndent, "\t"),
+                t!(Token::ToDoContent, "until next Monday"),
+                t!(Token::Line, "\n"),
+                t!(Token::EOF, ""),
+            ],
+            Program {
+                blocks: vec![Block::Error(Error::UnexpectedToDoProp {
+                    property: SString::new("until", 10, 15),
                 })],
             },
         );
@@ -1525,11 +1949,13 @@ mod tests {
                         .to_string(),
                         span: Span { lo: 59, hi: 146 },
                     }),
-                    due: Some(property::Due {
-                        rel: None,
-                        ts: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
-                    }),
-                    late_due: None,
+                    schedule: Schedule::Once {
+                        due: Some(property::Due {
+                            rel: None,
+                            ts: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
+                        }),
+                        late_due: None,
+                    },
                 })],
             },
         );
@@ -1671,11 +2097,13 @@ mod tests {
                         .to_string(),
                         span: Span { lo: 59, hi: 563 },
                     }),
-                    due: Some(property::Due {
-                        rel: None,
-                        ts: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
-                    }),
-                    late_due: None,
+                    schedule: Schedule::Once {
+                        due: Some(property::Due {
+                            rel: None,
+                            ts: Some(ts("0001-01-01T00:00:00+00:00[UTC]")),
+                        }),
+                        late_due: None,
+                    },
                 })],
             },
         );

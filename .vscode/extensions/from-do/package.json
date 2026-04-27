@@ -36,7 +36,8 @@
                 "editor.trimAutoWhitespace": false,
                 "editor.detectIndentation": false,
                 "editor.insertSpaces": false,
-                "editor.tabSize": 4
+                "editor.tabSize": 4,
+                "files.autoSave": "off"
             },
             "editor.tokenColorCustomizations": {
                 "textMateRules": [

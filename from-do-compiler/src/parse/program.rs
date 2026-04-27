@@ -30,12 +30,19 @@ pub enum Error {
         time_zone: SString,
         message: String,
     },
+    AheadParseError {
+        ahead: SString,
+        message: String,
+    },
     UnknownToDoProp {
         property: SString,
     },
     CurParseError {
         input: SString,
         message: String,
+    },
+    UnexpectedToDoProp {
+        property: SString,
     },
 }
 
@@ -54,6 +61,7 @@ impl Program {
 pub enum Directive {
     Now(directive::Now),
     Tz(directive::Tz),
+    Ahead(directive::Ahead),
 }
 
 pub mod directive {
@@ -66,6 +74,11 @@ pub mod directive {
     pub struct Tz {
         pub tz: jiff::tz::TimeZone,
     }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Ahead {
+        pub ahead: u32,
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,8 +88,7 @@ pub struct ToDo {
     pub head: SString,
     pub body: Option<SString>,
 
-    pub due: Option<property::Due>,
-    pub late_due: Option<property::Due>,
+    pub schedule: Schedule,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -85,6 +97,29 @@ pub enum ToDoType {
     ToDo,
     /// A task that is already done (the "+" prefixed tasks).
     NotToDo,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Schedule {
+    Once {
+        due: Option<property::Due>,
+        late_due: Option<property::Due>,
+    },
+    Recurring {
+        recurring: property::Recurring,
+        begin: Option<property::Due>,
+        until: Option<property::Due>,
+    },
+}
+
+impl Schedule {
+    /// A Once schedule that have no due date and late due date.
+    pub fn never() -> Self {
+        Schedule::Once {
+            due: None,
+            late_due: None,
+        }
+    }
 }
 
 pub mod property {
@@ -99,5 +134,6 @@ pub mod property {
     #[derive(Debug, Clone, PartialEq, Eq)]
     pub struct Recurring {
         pub pattern: recur::Pattern,
+        pub ts: Option<jiff::Zoned>,
     }
 }

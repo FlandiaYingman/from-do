@@ -50,7 +50,7 @@ The current modules are listed as follows:
 - **Evaluator.** `from-do-compiler::eval` resolves relative dates ("today", "tomorrow", "next Monday", "in 3 days") against the current time (or against a `:now` directive, useful for demos and tests) and produces a new program.
 - **Printer.** `from-do-compiler::print` pretty-prints the (possibly-evaluated) AST back to canonical From-Do source, so saving a file in the watcher round-trips it through `lex -> parse-> eval-> print`.
 - **`cur` sub-grammar** (`from-do-cur::cur`): a self-contained parser/formatter for absolute and relative date-time phrases ("today", "tomorrow at 17:15", ...) with a property-based round-trip test suite (`test_roundtrip.rs`).
-- **`recur` sub-grammar** (`from-do-cur::recur`): a self-contained parser/formatter for recurring patterns ("every Monday", "every 2 weeks", ...), including a `next()` operator that computes the next occurrence after a given instant. It's not yet wired into the main compiler.
+- **`recur` sub-grammar** (`from-do-cur::recur`): a self-contained parser/formatter for recurring patterns ("every Monday", "every 2 weeks", ...), including a `next()` operator that computes the next occurrence after a given instant.
 - **Watch CLI** (`from-do-cli watch`): uses `notify-debouncer-mini` for file events and a `tokio` multi-thread runtime to compile changed `.fromdo` files concurrently.
 - **VS Code extension** (`.vscode/extensions/from-do`): TextMate grammar for syntax highlighting and editor configuration; auto-recommended for the workspace.
 
@@ -66,7 +66,5 @@ The current modules are listed as follows:
 The main to-do's for the From Do project include:
 
 - Supporting a user-friendly user interface for the compiler. This involves developing a VS Code extension and a LSP server for From Do. It should support better error reporting (currently, the compiler has a cool error reporting infrastructure, but it has to be integrated). It should support richer syntax highlighting based on the semantics. For example, overdue tasks can be highlighted.
-
-- Supporting recurring tasks. This involves implementing a "task generator" that accepts a "recurring" property. It generates the next task whenever it's time to do so. The recurring pattern can be something like "every Monday". The pattern parsing/formatting logic is already designed and implemented in the `from-do-recur::recur` module, but it has not been integrated into the main compiler yet.
 
 - A task scheduler. This is a very broad feature, but as the first step, it From Do should at least support sorting or arranging the tasks based on their due date/time.

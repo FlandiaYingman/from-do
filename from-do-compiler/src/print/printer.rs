@@ -1,4 +1,5 @@
 use from_do_cur::cur::*;
+use from_do_cur::recur::strfrecur;
 
 use crate::parse::*;
 
@@ -32,6 +33,10 @@ impl Printer {
                                 .expect("A parsed tz should have an IANA name")
                         ));
                     }
+                    Directive::Ahead(directive) => {
+                        self.buffer
+                            .push_str(&format!(":ahead {}\n", directive.ahead));
+                    }
                 },
                 Block::ToDo(todo) => {
                     let head_marker = match todo.t {
@@ -40,33 +45,28 @@ impl Printer {
                     };
                     self.buffer
                         .push_str(&format!("{}\t{}\n", head_marker, todo.head.node));
-                    if let Some(due) = &todo.due {
-                        let rel_str = if let Some(rel) = &due.rel {
-                            &strfcur(rel)
-                        } else {
-                            ""
-                        };
-                        let ts_str = if let Some(ts) = &due.ts {
-                            &format!("{:#}", ts)
-                        } else {
-                            panic!("invalid due property: ts is None");
-                        };
-                        self.buffer
-                            .push_str(&format!("\tdue {}\n\t\t{}\n", rel_str, ts_str));
-                    }
-                    if let Some(late_due) = &todo.late_due {
-                        let rel_str = if let Some(rel) = &late_due.rel {
-                            &strfcur(rel)
-                        } else {
-                            ""
-                        };
-                        let ts_str = if let Some(ts) = &late_due.ts {
-                            &format!("{:#}", ts)
-                        } else {
-                            panic!("invalid due property: ts is None");
-                        };
-                        self.buffer
-                            .push_str(&format!("\tlate due {}\n\t\t{}\n", rel_str, ts_str));
+                    match &todo.schedule {
+                        Schedule::Once { due, late_due } => {
+                            if let Some(due) = due {
+                                self.print_due("due", due);
+                            }
+                            if let Some(late_due) = late_due {
+                                self.print_due("late due", late_due);
+                            }
+                        }
+                        Schedule::Recurring {
+                            recurring,
+                            begin,
+                            until,
+                        } => {
+                            self.print_recurring("recurring", recurring);
+                            if let Some(begin) = begin {
+                                self.print_due("begin", begin);
+                            }
+                            if let Some(until) = until {
+                                self.print_due("until", until);
+                            }
+                        }
                     }
                     self.buffer.push_str("\t\n");
                     if let Some(body) = &todo.body {
@@ -79,6 +79,35 @@ impl Printer {
             self.buffer.push_str("\n");
         }
         self.buffer.clone()
+    }
+
+    /// Print a `due`-shaped property line, including its `\t\t<ts>\n`
+    /// follow-up line. `name` is the property keyword (`"due"`,
+    /// `"late due"`, `"begin"`, `"until"`).
+    fn print_due(&mut self, name: &str, due: &property::Due) {
+        let rel_str = if let Some(rel) = &due.rel {
+            strfcur(rel)
+        } else {
+            String::new()
+        };
+        let ts_str = if let Some(ts) = &due.ts {
+            format!("{:#}", ts)
+        } else {
+            panic!("invalid {} property: ts is None", name);
+        };
+        self.buffer
+            .push_str(&format!("\t{} {}\n\t\t{}\n", name, rel_str, ts_str));
+    }
+
+    /// Print a `recurring`-shaped property line, including its `\t\t<ts>\n`
+    /// follow-up line. `name` is the property keyword (`"recurring"`).
+    fn print_recurring(&mut self, name: &str, recurring: &property::Recurring) {
+        let pattern_str = strfrecur(&recurring.pattern);
+        self.buffer
+            .push_str(&format!("\t{} {}\n", name, pattern_str));
+        if let Some(ts) = &recurring.ts {
+            self.buffer.push_str(&format!("\t\t{:#}\n", ts));
+        }
     }
 }
 
@@ -113,6 +142,10 @@ mod tests {
         jiff::tz::TimeZone::get(name).unwrap()
     }
 
+    fn recur_pattern(p: &str) -> from_do_cur::recur::Pattern {
+        from_do_cur::recur::strprecur(p).unwrap()
+    }
+
     #[test]
     fn sanity_0() {
         // empty program
@@ -134,8 +167,7 @@ mod tests {
                         t: ToDoType::ToDo,
                         head: s("FromDo"),
                         body: None,
-                        due: None,
-                        late_due: None,
+                        schedule: Schedule::never(),
                     }),
                 ],
             },
@@ -195,14 +227,16 @@ mod tests {
                             Don't you mind about the future
                             Think about today instead
                         "})),
-                        due: Some(property::Due {
-                            rel: None,
-                            ts: Some(ts("2026-04-08T12:00:00+00:00[UTC]")),
-                        }),
-                        late_due: Some(property::Due {
-                            rel: None,
-                            ts: Some(ts("2026-04-09T12:00:00+00:00[UTC]")),
-                        }),
+                        schedule: Schedule::Once {
+                            due: Some(property::Due {
+                                rel: None,
+                                ts: Some(ts("2026-04-08T12:00:00+00:00[UTC]")),
+                            }),
+                            late_due: Some(property::Due {
+                                rel: None,
+                                ts: Some(ts("2026-04-09T12:00:00+00:00[UTC]")),
+                            }),
+                        },
                     }),
                     Block::ToDo(ToDo {
                         t: ToDoType::ToDo,
@@ -214,8 +248,7 @@ mod tests {
                             Mary, that is good
                             What I need right here and now
                         "})),
-                        due: None,
-                        late_due: None,
+                        schedule: Schedule::never(),
                     }),
                 ],
             },
@@ -266,8 +299,7 @@ mod tests {
                         t: ToDoType::ToDo,
                         head: s("FromDo"),
                         body: None,
-                        due: None,
-                        late_due: None,
+                        schedule: Schedule::never(),
                     }),
                 ],
             },
@@ -314,6 +346,22 @@ mod tests {
     }
 
     #[test]
+    fn directive_ahead() {
+        //| :ahead 5
+        assert_print(
+            Program {
+                blocks: vec![Block::Directive(Directive::Ahead(directive::Ahead {
+                    ahead: 5,
+                }))],
+            },
+            indoc! {"
+                :ahead 5
+                
+            "},
+        );
+    }
+
+    #[test]
     fn todo_simple() {
         //| -	FromDo
         assert_print(
@@ -322,8 +370,7 @@ mod tests {
                     t: ToDoType::ToDo,
                     head: s("FromDo"),
                     body: None,
-                    due: None,
-                    late_due: None,
+                    schedule: Schedule::never(),
                 })],
             },
             indoc! {"
@@ -343,8 +390,7 @@ mod tests {
                     t: ToDoType::NotToDo,
                     head: s("FromDo"),
                     body: None,
-                    due: None,
-                    late_due: None,
+                    schedule: Schedule::never(),
                 })],
             },
             indoc! {"
@@ -366,17 +412,122 @@ mod tests {
                     t: ToDoType::ToDo,
                     head: s("Hello, FromDo!"),
                     body: None,
-                    due: Some(property::Due {
-                        rel: None,
-                        ts: Some(ts("2026-04-08T12:00:00+00:00[UTC]")),
-                    }),
-                    late_due: None,
+                    schedule: Schedule::Once {
+                        due: Some(property::Due {
+                            rel: None,
+                            ts: Some(ts("2026-04-08T12:00:00+00:00[UTC]")),
+                        }),
+                        late_due: None,
+                    },
                 })],
             },
             indoc! {"
                 -	Hello, FromDo!
                 	due 
                 		2026-04-08T12:00:00+00:00[UTC]
+                	
+                
+            "},
+        );
+    }
+
+    #[test]
+    fn todo_recurring() {
+        //| -	FromDo
+        //| 	recurring every Mon
+        assert_print(
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
+                    head: s("FromDo"),
+                    body: None,
+                    schedule: Schedule::Recurring {
+                        recurring: property::Recurring {
+                            pattern: recur_pattern("every Mon"),
+                            ts: None,
+                        },
+                        begin: None,
+                        until: None,
+                    },
+                })],
+            },
+            indoc! {"
+                -	FromDo
+                	recurring every Mon
+                	
+                
+            "},
+        );
+    }
+
+    #[test]
+    fn todo_recurring_with_ts() {
+        //| -	FromDo
+        //| 	recurring every Mon
+        //| 		2026-04-13T08:00:00+00:00[UTC]
+        assert_print(
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
+                    head: s("FromDo"),
+                    body: None,
+                    schedule: Schedule::Recurring {
+                        recurring: property::Recurring {
+                            pattern: recur_pattern("every Mon"),
+                            ts: Some(ts("2026-04-13T08:00:00+00:00[UTC]")),
+                        },
+                        begin: None,
+                        until: None,
+                    },
+                })],
+            },
+            indoc! {"
+                -	FromDo
+                	recurring every Mon
+                		2026-04-13T08:00:00+00:00[UTC]
+                	
+                
+            "},
+        );
+    }
+
+    #[test]
+    fn todo_recurring_with_from_until() {
+        //| -	FromDo
+        //| 	recurring every Mon
+        //| 	begin
+        //| 		2026-04-13T08:00:00+00:00[UTC]
+        //| 	until
+        //| 		2026-05-04T08:00:00+00:00[UTC]
+        assert_print(
+            Program {
+                blocks: vec![Block::ToDo(ToDo {
+                    t: ToDoType::ToDo,
+                    head: s("FromDo"),
+                    body: None,
+                    schedule: Schedule::Recurring {
+                        recurring: property::Recurring {
+                            pattern: recur_pattern("every Mon"),
+                            ts: None,
+                        },
+                        begin: Some(property::Due {
+                            rel: None,
+                            ts: Some(ts("2026-04-13T08:00:00+00:00[UTC]")),
+                        }),
+                        until: Some(property::Due {
+                            rel: None,
+                            ts: Some(ts("2026-05-04T08:00:00+00:00[UTC]")),
+                        }),
+                    },
+                })],
+            },
+            indoc! {"
+                -	FromDo
+                	recurring every Mon
+                	begin 
+                		2026-04-13T08:00:00+00:00[UTC]
+                	until 
+                		2026-05-04T08:00:00+00:00[UTC]
                 	
                 
             "},
@@ -400,8 +551,7 @@ mod tests {
                         Don't you mind about the future
                         Think about today instead
                     "})),
-                    due: None,
-                    late_due: None,
+                    schedule: Schedule::never(),
                 })],
             },
             indoc! {"
@@ -438,11 +588,13 @@ mod tests {
                         Why should you want to know?
                         Don't you mind about the future
                     "})),
-                    due: Some(property::Due {
-                        rel: None,
-                        ts: Some(ts("2026-04-08T12:00:00+00:00[UTC]")),
-                    }),
-                    late_due: None,
+                    schedule: Schedule::Once {
+                        due: Some(property::Due {
+                            rel: None,
+                            ts: Some(ts("2026-04-08T12:00:00+00:00[UTC]")),
+                        }),
+                        late_due: None,
+                    },
                 })],
             },
             indoc! {"

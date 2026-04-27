@@ -46,6 +46,27 @@
 	accepted by the parser, but the formatter prefers the "calendar offset"
 	format.
 
+:ahead 3
+
+-	Recurring Tasks...
+	recurring every Mon
+	begin last Friday
+	until next Friday
+	
+	Recurring tasks are task generators. The semantics of a recurring task is to
+	duplicate itself according to the recurring pattern. In this example, the
+	task generates 3 tasks ahead, which duplicates all the subject and body.
+	
+	The ":ahead" sets the default number of tasks to generate ahead. 
+	
+	Optionally, a recurring task can have a "begin" and/or "until" property,
+	which restricts the generation to be after the "begin" date and before the
+	"until" date (inclusive). 
+
+	This example generates 1 task only even if `:ahead` is 3. This is because
+	there is only one Monday between last Friday and next Friday, which is next
+	Monday.
+
 -	That's all?
 	
 	Yeah. That's all for the demo. I had a bad time management, so most planned
@@ -54,18 +75,8 @@
 	
 	Of course, the future work include:
 	
-	- Support more properties, such as "recurring" and "priority".
+	- Support more properties, such as "priority".
 	- Support task layouts, i.e., sections, subsections, etc.
 	- Support scheduling the tasks.
 	- Create a LSP for From Do.
-	
-	The recurring property is one of the most interesting property that I'm
-	planning to implement. It changes the current task into a "task generator",
-	and generates tasks according to the recurring pattern. The data model,
-	parsing logic, and formatting logic of recurring is already designed there,
-	but I haven't yet had time to implement it.
 
--	From Do: Support recurring task.
-	due next Monday
-	late due next Sunday
-	
